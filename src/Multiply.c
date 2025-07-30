@@ -211,7 +211,7 @@ int MultiplyForCanonicalTPQ
   }
   /*[s] calculate redidue norm*/
   dnorm_residue = 0.0;
-  #pragma omp parallel for default(none) reduction(+: dnorm_residue) private(i) shared(v0) firstprivate(i_max)
+  #pragma omp parallel for default(none) reduction(+: dnorm_residue) private(i) shared(v2) firstprivate(i_max)
   for(i = 1; i <= i_max; i++){
     dnorm_residue += conj(v2[i])*v2[i];
   }
