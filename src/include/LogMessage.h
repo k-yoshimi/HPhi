@@ -131,6 +131,7 @@ extern const char* cLogExpecEnergyEnd;
 extern const char* cLogTPQRand;
 extern const char* cLogSSRand;
 extern const char* cLogNormRand;
+extern const char* cLogNormResidue;
 extern const char* cLogFlctRand;
 extern const char* cLogTPQStep;
 extern const char* cLogTPQEnd;

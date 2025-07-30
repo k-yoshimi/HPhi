@@ -57,6 +57,7 @@ int CalcByCanonicalTPQ(
     char sdt[D_FileNameMax];
     char sdt_phys[D_FileNameMax];
     char sdt_norm[D_FileNameMax];
+    char sdt_norm_residue[D_FileNameMax];
     char sdt_flct[D_FileNameMax];
     char file_name[D_FileNameMax];
     int rand_i, rand_max, iret;
@@ -129,6 +130,7 @@ int CalcByCanonicalTPQ(
     for (rand_i = 0; rand_i<rand_max; rand_i++){
         sprintf(sdt_phys, cFileNameSSRand, rand_i);      
         sprintf(sdt_norm, cFileNameNormRand, rand_i);
+        sprintf(sdt_norm_residue, cFileNameNormResidue, rand_i);
         sprintf(sdt_flct, cFileNameFlctRand, rand_i);
         Ns = 1.0 * X->Bind.Def.NsiteMPI;
         fprintf(stdoutMPI, cLogTPQRand, rand_i+1, rand_max);
@@ -179,6 +181,14 @@ int CalcByCanonicalTPQ(
             }
             fprintf(fp, "%s", cLogNormRand);
             fclose(fp);
+            /*[s] norm residue*/
+            if (childfopenMPI(sdt_norm_residue, "w", &fp) != 0) {
+                return -1;
+            }
+            fprintf(fp, "%s", cLogNormResidue);
+            fclose(fp);
+            /*[e] norm residue*/
+
             // for fluctuations
             if (childfopenMPI(sdt_flct, "w", &fp) != 0) {
                 return -1;
@@ -300,6 +310,15 @@ int CalcByCanonicalTPQ(
             }
             fprintf(fp, "%.16lf %.16lf %.16lf %d\n", inv_temp, global_norm, global_1st_norm, step_i);
             fclose(fp);
+            /*[s] residue norm*/
+            if(childfopenMPI(sdt_norm_residue, "a", &fp)!=0){
+                return FALSE;
+            }
+            fprintf(fp, "%.16lf %.16lf %d\n", inv_temp, global_norm_residue,step_i);
+            fclose(fp);
+            /*[e] residue norm*/
+
+
 
             // for fluctuations
             if (childfopenMPI(sdt_flct, "a", &fp) != 0) {

@@ -65,6 +65,7 @@ extern double LargeValue;/**< constant value l for TPQ calculation.*/
 extern int    NumAve;/**< Average number for TPQ calculation*/
 extern int step_i;/**< step for TPQ calculation*/
 extern double global_norm;/**< norm before normalization for TPQ calculation*/
+extern double global_norm_residue;/**< norm before normalization for TPQ calculation*/
 extern double global_1st_norm;/**< 1-st norm for TPQ calculation*/
 extern int step_spin;/**< output step for TE calculation.*/
 /*[e] For TPQ*/
@@ -119,6 +120,7 @@ extern const char* cFileNameTridiagonalMatrixComponents;/**> Name of the file to
 extern const char* cFileNameSSRand;/**> Name of the SS_rand file.*/
 extern const char* cFileNameTPQStep;/**> Name of the Time_TPQ_Step file.*/
 extern const char* cFileNameNormRand;/**> Name of the NormRand file.*/
+extern const char* cFileNameNormResidue;/**> Name of the NormRand file.*/
 extern const char* cFileNameFlctRand;/**> Name of the Flct file.*/
 extern const char* cFileName1BGreen_TPQ;/**> Name of the file to output one-body Green's functions for TPQ calculation.*/
 extern const char* cFileName2BGreen_TPQ;/**> Name of the file to output two-body Green's functions for TPQ calculation.*/
