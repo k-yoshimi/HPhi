@@ -106,6 +106,10 @@ int CalcSpectrum(
     double complex *dcomega;
     size_t byte_size;
 
+    // For Bra side excited state (B|phi>)
+    double complex *v0_Bra = NULL;
+    double dnorm_Bra = 0.0;
+
     //set omega
     if (SetOmega(&(X->Bind.Def)) != TRUE) {
         fprintf(stderr, "Error: Fail to set Omega.\n");
@@ -189,10 +193,41 @@ int CalcSpectrum(
     TimeKeeper(&(X->Bind), cFileNameTimeKeep, c_CalcExcitedStateStart, "a");
     fprintf(stdoutMPI, "  Start: Calculating an excited vector.\n");
 
-    //Multiply Operator
+    //Multiply Operator (ket side: A|phi>)
     StartTimer(6102);
     GetExcitedState(&(X->Bind), v0, v1Org);
     StopTimer(6102);
+
+    //Create Bra side excited state (B|phi>) if specified
+    if (X->Bind.Def.NPairExcitationOperatorBra > 0) {
+        v0_Bra = cd_1d_allocate(X->Bind.Check.idim_max + 1);
+        for (i = 0; i <= X->Bind.Check.idim_max; i++) {
+            v0_Bra[i] = 0.0;
+        }
+        // Temporarily swap to Bra operators
+        int **tmpOp = X->Bind.Def.PairExcitationOperator;
+        double complex *tmpPara = X->Bind.Def.ParaPairExcitationOperator;
+        unsigned int tmpN = X->Bind.Def.NPairExcitationOperator;
+
+        X->Bind.Def.PairExcitationOperator = X->Bind.Def.PairExcitationOperatorBra;
+        X->Bind.Def.ParaPairExcitationOperator = X->Bind.Def.ParaPairExcitationOperatorBra;
+        X->Bind.Def.NPairExcitationOperator = X->Bind.Def.NPairExcitationOperatorBra;
+
+        GetExcitedState(&(X->Bind), v0_Bra, v1Org);
+
+        // Restore original operators
+        X->Bind.Def.PairExcitationOperator = tmpOp;
+        X->Bind.Def.ParaPairExcitationOperator = tmpPara;
+        X->Bind.Def.NPairExcitationOperator = tmpN;
+
+        dnorm_Bra = NormMPI_dc(X->Bind.Check.idim_max, v0_Bra);
+        if (fabs(dnorm_Bra) > pow(10.0, -15)) {
+            for (i = 1; i <= X->Bind.Check.idim_max; i++) {
+                v0_Bra[i] = v0_Bra[i] / dnorm_Bra;
+            }
+        }
+        fprintf(stdoutMPI, "  Bra side excited state created. Norm = %.10lf\n", dnorm_Bra);
+    }
 
     //calculate norm
     dnorm = NormMPI_dc(X->Bind.Check.idim_max, v0);
@@ -206,6 +241,9 @@ int CalcSpectrum(
         dcSpectrum[i] = 0;
       }
       OutputSpectrum(X, Nomega, dcSpectrum, dcomega);
+      if (v0_Bra != NULL) {
+        free_cd_1d_allocate(v0_Bra);
+      }
       return TRUE;
     }
     //normalize vector
@@ -262,7 +300,15 @@ int CalcSpectrum(
 
     case CG:
 
-      iret = CalcSpectrumByBiCG(X, v0, v1, vg, Nomega, dcSpectrum, dcomega);
+      if (v0_Bra != NULL) {
+        // Use different operators for bra and ket
+        iret = CalcSpectrumByBiCG(X, v0, v0_Bra, v1, vg, Nomega, dcSpectrum, dcomega);
+        free_cd_1d_allocate(v0_Bra);
+        v0_Bra = NULL;
+      } else {
+        // Same operator for bra and ket (original behavior)
+        iret = CalcSpectrumByBiCG(X, v0, v0, v1, vg, Nomega, dcSpectrum, dcomega);
+      }
 
       if (iret != TRUE) {
         //Error Message will be added.
