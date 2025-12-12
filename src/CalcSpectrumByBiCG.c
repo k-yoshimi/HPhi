@@ -208,7 +208,7 @@ void InitShadowRes(
 int CalcSpectrumByBiCG(
   struct EDMainCalStruct *X,//!<[inout]
   double complex *vrhs,//!<[in] [CheckList::idim_max] Right hand side vector, excited state (ket).
-  double complex *vrhs_Bra,//!<[in] [CheckList::idim_max] Right hand side vector for bra.
+  double complex *vlhs_Bra,//!<[in] [CheckList::idim_max] Left hand side vector for bra.
   double complex *v2,//!<[inout] [CheckList::idim_max] Work space for residual vector @f${\bf r}@f$
   double complex *v4,//!<[inout] [CheckList::idim_max] Work space for shadow residual vector @f${\bf {\tilde r}}@f$
   int Nomega,//!<[in] Number of Frequencies
@@ -311,7 +311,7 @@ int CalcSpectrumByBiCG(
     iret = mltply(&X->Bind, v14, v4);
     if (iret == -1) return FALSE;
 
-    res_proj = VecProdMPI(X->Bind.Check.idim_max, vrhs_Bra, v2);
+    res_proj = VecProdMPI(X->Bind.Check.idim_max, vlhs_Bra, v2);
     /**
     <li>Update projected result vector dcSpectrum.</li>
     */
