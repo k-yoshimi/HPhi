@@ -1,0 +1,11 @@
+         ModPara  SpectrumModpara
+         LocSpin  locspn.def
+           Trans  trans.def
+    CoulombIntra  coulombintra.def
+        OneBodyG  greenone.def
+        TwoBodyG  greentwo.def
+         CalcMod  calcmod_cg.def
+  SingleExcitation  singleexcitation.def
+  SingleExcitationBra  singleexcitationbra.def
+     SpectrumVec  zvo_eigenvec_0
+

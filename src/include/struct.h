@@ -192,10 +192,16 @@ struct DefineList {
   char file_invtemp[D_FileNameMax];
 
   int **SingleExcitationOperator;/**<@brief [DefineList::NSingleExcitationOperator][3] 
-                                 Indices of single excitaion operator for spectrum. malloc in setmem_def().*/
+                                Indices of single excitaion operator for spectrum. malloc in setmem_def().*/
   unsigned int NSingleExcitationOperator;/**<@brief Number of single excitaion operator for spectrum.*/
   double complex *ParaSingleExcitationOperator;/**<@brief [DefineList::NSingleExcitationOperator] 
               Coefficient of single excitaion operator for spectrum. malloc in setmem_def().*/
+
+  int **SingleExcitationOperatorBra;/**<@brief [DefineList::NSingleExcitationOperatorBra][3] 
+                                Indices of single excitaion operator for spectrum (bra). malloc in setmem_def().*/
+  unsigned int NSingleExcitationOperatorBra;/**<@brief Number of single excitaion operator for bra.*/
+  double complex *ParaSingleExcitationOperatorBra;/**<@brief [DefineList::NSingleExcitationOperatorBra] 
+              Coefficient of single excitaion operator for bra. malloc in setmem_def().*/
 
   int **PairExcitationOperator;/**<@brief [DefineList::NPairExcitationOperator][5] 
                                Indices of pair excitaion operator for spectrum. malloc in setmem_def().*/

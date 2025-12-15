@@ -228,6 +228,35 @@ int CalcSpectrum(
         }
         fprintf(stdoutMPI, "  Bra side excited state created. Norm = %.10lf\n", dnorm_Bra);
     }
+    else if (X->Bind.Def.NSingleExcitationOperatorBra > 0) {
+        v0_Bra = cd_1d_allocate(X->Bind.Check.idim_max + 1);
+        for (i = 0; i <= X->Bind.Check.idim_max; i++) {
+            v0_Bra[i] = 0.0;
+        }
+        // Temporarily swap to Bra operators
+        int **tmpOp = X->Bind.Def.SingleExcitationOperator;
+        double complex *tmpPara = X->Bind.Def.ParaSingleExcitationOperator;
+        unsigned int tmpN = X->Bind.Def.NSingleExcitationOperator;
+
+        X->Bind.Def.SingleExcitationOperator = X->Bind.Def.SingleExcitationOperatorBra;
+        X->Bind.Def.ParaSingleExcitationOperator = X->Bind.Def.ParaSingleExcitationOperatorBra;
+        X->Bind.Def.NSingleExcitationOperator = X->Bind.Def.NSingleExcitationOperatorBra;
+
+        GetExcitedState(&(X->Bind), v0_Bra, v1Org);
+
+        // Restore original operators
+        X->Bind.Def.SingleExcitationOperator = tmpOp;
+        X->Bind.Def.ParaSingleExcitationOperator = tmpPara;
+        X->Bind.Def.NSingleExcitationOperator = tmpN;
+
+        dnorm_Bra = NormMPI_dc(X->Bind.Check.idim_max, v0_Bra);
+        if (fabs(dnorm_Bra) > pow(10.0, -15)) {
+            for (i = 1; i <= X->Bind.Check.idim_max; i++) {
+                v0_Bra[i] = v0_Bra[i] / dnorm_Bra;
+            }
+        }
+        fprintf(stdoutMPI, "  Bra side excited state created. Norm = %.10lf\n", dnorm_Bra);
+    }
 
     //calculate norm
     dnorm = NormMPI_dc(X->Bind.Check.idim_max, v0);
