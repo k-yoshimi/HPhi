@@ -220,12 +220,9 @@ int CalcSpectrum(
         X->Bind.Def.ParaPairExcitationOperator = tmpPara;
         X->Bind.Def.NPairExcitationOperator = tmpN;
 
+        // Note: Normalization of v0_Bra is not needed here.
+        // In CalcSpectrumByBiCG, the unnormalized vector is used directly.
         dnorm_Bra = NormMPI_dc(X->Bind.Check.idim_max, v0_Bra);
-        if (fabs(dnorm_Bra) > pow(10.0, -15)) {
-            for (i = 1; i <= X->Bind.Check.idim_max; i++) {
-                v0_Bra[i] = v0_Bra[i] / dnorm_Bra;
-            }
-        }
         fprintf(stdoutMPI, "  Bra side excited state created. Norm = %.10lf\n", dnorm_Bra);
     }
     else if (X->Bind.Def.NSingleExcitationOperatorBra > 0) {
@@ -249,12 +246,9 @@ int CalcSpectrum(
         X->Bind.Def.ParaSingleExcitationOperator = tmpPara;
         X->Bind.Def.NSingleExcitationOperator = tmpN;
 
+        // Note: Normalization of v0_Bra is not needed here.
+        // In CalcSpectrumByBiCG, the unnormalized vector is used directly.
         dnorm_Bra = NormMPI_dc(X->Bind.Check.idim_max, v0_Bra);
-        if (fabs(dnorm_Bra) > pow(10.0, -15)) {
-            for (i = 1; i <= X->Bind.Check.idim_max; i++) {
-                v0_Bra[i] = v0_Bra[i] / dnorm_Bra;
-            }
-        }
         fprintf(stdoutMPI, "  Bra side excited state created. Norm = %.10lf\n", dnorm_Bra);
     }
 
@@ -275,7 +269,10 @@ int CalcSpectrum(
       }
       return TRUE;
     }
-    //normalize vector
+    // Note: The following normalization of v1 is actually not used in CalcSpectrumByBiCG.
+    // In CalcSpectrumByBiCG, v1 is passed as a workspace (v2) and immediately overwritten
+    // by the unnormalized vector v0 (vrhs). This code is kept for compatibility with
+    // other spectrum calculation methods (e.g., Lanczos).
 #pragma omp parallel for default(none) private(i) shared(v1, v0) firstprivate(i_max, dnorm, X)
     for (i = 1; i <= X->Bind.Check.idim_max; i++) {
       v1[i] = v0[i] / dnorm;
