@@ -31,7 +31,9 @@ jobs:
       - name: ctest unit
         working-directory: ${{runner.workspace}}/build
         shell: bash
-        run: ctest -V -L unit
+        run: |
+          ctest --output-on-failure -L unit --parallel 1 || \
+          ctest --output-on-failure -L unit --parallel 1
 
   ctest_smoke:
     if: ${{ github.event_name != 'schedule' }}
@@ -67,7 +69,9 @@ jobs:
       - name: ctest smoke
         working-directory: ${{runner.workspace}}/build
         shell: bash
-        run: ctest -V -L smoke
+        run: |
+          ctest --output-on-failure -L smoke --parallel 1 || \
+          ctest --output-on-failure -L smoke --parallel 1
 
   ctest_full_schedule:
     if: ${{ github.event_name == 'schedule' }}

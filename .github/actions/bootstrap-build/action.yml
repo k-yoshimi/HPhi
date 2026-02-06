@@ -16,8 +16,14 @@ runs:
       if: ${{ runner.os == 'Linux' }}
       shell: bash
       run: |
-        sudo apt update
-        sudo apt install libblas-dev liblapack-dev openmpi-bin libopenmpi-dev libscalapack-openmpi-dev
+        for i in 1 2 3; do
+          sudo apt update && \
+          sudo apt install -y libblas-dev liblapack-dev openmpi-bin libopenmpi-dev libscalapack-openmpi-dev && \
+          exit 0
+          sleep $((i * 10))
+        done
+        echo "apt install failed after retries" >&2
+        exit 1
 
     - name: brew
       if: ${{ runner.os == 'macOS' }}
