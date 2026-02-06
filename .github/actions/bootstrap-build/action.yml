@@ -1,0 +1,54 @@
+name: Bootstrap Build
+description: Install dependencies, configure, and build HPhi
+
+inputs:
+  build-dir:
+    description: Build directory path
+    required: true
+  source-dir:
+    description: Source directory path
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: apt
+      if: ${{ runner.os == 'Linux' }}
+      shell: bash
+      run: |
+        sudo apt update
+        sudo apt install libblas-dev liblapack-dev openmpi-bin libopenmpi-dev libscalapack-openmpi-dev
+
+    - name: brew
+      if: ${{ runner.os == 'macOS' }}
+      shell: bash
+      run: |
+        brew install openmpi scalapack
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    - name: pip
+      shell: bash
+      run: |
+        python3 -m pip install numpy
+
+    - name: make workspace
+      shell: bash
+      run: cmake -E make_directory "${{ inputs.build-dir }}"
+
+    - name: cmake
+      shell: bash
+      working-directory: ${{ inputs.build-dir }}
+      run: |
+        if [ "${{ runner.os }}" = "macOS" ] ; then
+          export FC=gfortran-15
+        fi
+        cmake -DCMAKE_VERBOSE_MAKEFILE=ON "${{ inputs.source-dir }}"
+
+    - name: build
+      shell: bash
+      working-directory: ${{ inputs.build-dir }}
+      run: cmake --build ./ -j4

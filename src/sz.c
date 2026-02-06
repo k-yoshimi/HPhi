@@ -21,6 +21,435 @@
 #include "wrapperMPI.h"
 #include "xsetmem.h"
 
+static void InitializeGeneralSpinWorkArrays(
+    const struct BindStruct *X,
+    long int **list_2_1_Sz,
+    long int **list_2_2_Sz
+) {
+    long unsigned int j;
+
+    *list_2_1_Sz = NULL;
+    *list_2_2_Sz = NULL;
+    if (X->Def.iFlgGeneralSpin != TRUE) {
+        return;
+    }
+
+    *list_2_1_Sz = li_1d_allocate(X->Check.sdim + 2);
+    *list_2_2_Sz = li_1d_allocate((X->Def.Tpow[X->Def.Nsite - 1] * X->Def.SiteToBit[X->Def.Nsite - 1] / X->Check.sdim) + 2);
+    for (j = 0; j < X->Check.sdim + 2; j++) {
+        (*list_2_1_Sz)[j] = 0;
+    }
+    for (j = 0; j < (X->Def.Tpow[X->Def.Nsite - 1] * X->Def.SiteToBit[X->Def.Nsite - 1] / X->Check.sdim) + 2; j++) {
+        (*list_2_2_Sz)[j] = 0;
+    }
+}
+
+static long unsigned int *AllocateAndClearListJb(const struct BindStruct *X) {
+    long unsigned int i;
+    long unsigned int *list_jb;
+
+    list_jb = lui_1d_allocate(X->Large.SizeOflistjb);
+    for (i = 0; i < X->Large.SizeOflistjb; i++) {
+        list_jb[i] = 0;
+    }
+    return list_jb;
+}
+
+static void SetupHilbertDimensionContext(
+    struct BindStruct *X,
+    unsigned int *N2,
+    unsigned int *N,
+    double *idim
+) {
+    long unsigned int j;
+
+    switch (X->Def.iCalcModel) {
+        case HubbardGC:
+        case HubbardNConserved:
+        case Hubbard:
+        case tJGC:
+        case tJNConserved:
+        case tJ:
+            *N2 = 2 * X->Def.Nsite;
+            *idim = pow(2.0, *N2);
+            break;
+        case KondoGC:
+        case Kondo:
+        case KondoNConserved:
+            *N2 = 2 * X->Def.Nsite;
+            *N = X->Def.Nsite;
+            *idim = pow(2.0, *N2);
+            for (j = 0; j < *N; j++) {
+                fprintf(stdoutMPI, cStateLocSpin, j, X->Def.LocSpn[j]);
+            }
+            break;
+        case SpinGC:
+        case Spin:
+            *N = X->Def.Nsite;
+            if (X->Def.iFlgGeneralSpin == FALSE) {
+                *idim = pow(2.0, *N);
+            } else {
+                *idim = 1;
+                for (j = 0; j < *N; j++) {
+                    *idim *= X->Def.SiteToBit[j];
+                }
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+static int SetupSplitBitContext(
+    struct BindStruct *X,
+    long unsigned int *irght,
+    long unsigned int *ilft,
+    long unsigned int *ihfbit
+) {
+    switch (X->Def.iCalcModel) {
+        case HubbardNConserved:
+        case Hubbard:
+        case tJGC:
+        case tJNConserved:
+        case tJ:
+        case KondoGC:
+        case Kondo:
+        case KondoNConserved:
+        case Spin:
+            if (X->Def.iFlgGeneralSpin == FALSE) {
+                if (GetSplitBitByModel(X->Def.Nsite, X->Def.iCalcModel, irght, ilft, ihfbit) != 0) {
+                    return -1;
+                }
+                X->Large.irght = *irght;
+                X->Large.ilft = *ilft;
+                X->Large.ihfbit = *ihfbit;
+            } else {
+                *ihfbit = X->Check.sdim;
+            }
+            break;
+        default:
+            break;
+    }
+    return 0;
+}
+
+static void ValidateSzDimensionOrAbort(const long unsigned int calculated_dim, const long unsigned int expected_dim) {
+    FILE *fp_err;
+    char sdt_err[D_FileNameMax];
+
+    if (calculated_dim == expected_dim) {
+        return;
+    }
+
+    fprintf(stderr, "%s", cErrSz);
+    fprintf(stderr, cErrSz_ShowDim, calculated_dim, expected_dim);
+    strcpy(sdt_err, cFileNameErrorSz);
+    if (childfopenMPI(sdt_err, "a", &fp_err) != 0) {
+        exitMPI(-1);
+    }
+    fprintf(fp_err, "%s", cErrSz_OutFile);
+    fclose(fp_err);
+    exitMPI(-1);
+}
+
+static void ConvertNConservedModelToNormalIfNeeded(struct BindStruct *X) {
+    if (X->Def.iFlgCalcSpec != CALCSPEC_NOT) {
+        return;
+    }
+    if (X->Def.iCalcModel == HubbardNConserved) {
+        X->Def.iCalcModel = Hubbard;
+    }
+    if (X->Def.iCalcModel == KondoNConserved) {
+        X->Def.iCalcModel = Kondo;
+    }
+    if (X->Def.iCalcModel == tJNConserved) {
+        X->Def.iCalcModel = tJ;
+    }
+}
+
+static void RecordOMPSzMid(struct BindStruct *X) {
+    TimeKeeper(X, cFileNameSzTimeKeep, cOMPSzMid, "a");
+    TimeKeeper(X, cFileNameTimeKeep, cOMPSzMid, "a");
+}
+
+static long unsigned int ComputeSzCountForTJFamily(
+    struct BindStruct *X,
+    long unsigned int ihfbit,
+    unsigned int N2,
+    long unsigned int *list_1_,
+    long unsigned int *list_2_1_,
+    long unsigned int *list_2_2_,
+    long unsigned int *list_jb
+) {
+    long unsigned int ib;
+    long unsigned int icnt = 0;
+
+    switch (X->Def.iCalcModel) {
+        case tJ:
+            calculate_jb_tJ(X, list_jb, ihfbit, N2);
+            break;
+        case tJNConserved:
+            calculate_jb_tJNConserved(X, list_jb, ihfbit, N2);
+            break;
+        case tJGC:
+            calculate_jb_tJGC(X, list_jb, ihfbit, N2);
+            break;
+        default:
+            return 0;
+    }
+
+    RecordOMPSzMid(X);
+    for (ib = 0; ib < X->Check.sdim; ib++) {
+        icnt += omp_sz_tJ(ib, ihfbit, X, list_1_, list_2_1_, list_2_2_, list_jb);
+    }
+    return icnt;
+}
+
+static int ComputeSzCountForHubbardFamily(
+    struct BindStruct *X,
+    long unsigned int ihfbit,
+    unsigned int N2,
+    long unsigned int *list_1_,
+    long unsigned int *list_2_1_,
+    long unsigned int *list_2_2_,
+    long unsigned int *list_jb,
+    long unsigned int *icnt_out
+) {
+    int hacker;
+    long unsigned int ib;
+    long unsigned int icnt = 0;
+
+    hacker = X->Def.read_hacker;
+    switch (X->Def.iCalcModel) {
+        case Hubbard:
+            if (hacker == 0) {
+                calculate_jb_Hubbard(X, list_jb, ihfbit, N2);
+                RecordOMPSzMid(X);
+                for (ib = 0; ib < X->Check.sdim; ib++) {
+                    icnt += omp_sz(ib, ihfbit, X, list_1_, list_2_1_, list_2_2_, list_jb);
+                }
+            } else if (hacker == 1) {
+                calculate_jb_Hubbard_Hacker(X, list_jb, ihfbit, N2);
+                RecordOMPSzMid(X);
+#pragma omp parallel for default(none) reduction(+:icnt) private(ib) firstprivate(ihfbit, X) shared(list_1_, list_2_1_, list_2_2_, list_jb)
+                for (ib = 0; ib < X->Check.sdim; ib++) {
+                    icnt += omp_sz_hacker(ib, ihfbit, X, list_1_, list_2_1_, list_2_2_, list_jb);
+                }
+            } else {
+                fprintf(stderr, "Error: CalcHS in ModPara file must be 0 or 1 for Hubbard model.");
+                return -1;
+            }
+            break;
+        case HubbardNConserved:
+            if (hacker == 0) {
+                calculate_jb_HubbardNCoserved(X, list_jb, ihfbit, N2);
+                RecordOMPSzMid(X);
+#pragma omp parallel for default(none) reduction(+:icnt) private(ib) firstprivate(ihfbit, N2, X) shared(list_1_, list_2_1_, list_2_2_, list_jb)
+                for (ib = 0; ib < X->Check.sdim; ib++) {
+                    icnt += omp_sz(ib, ihfbit, X, list_1_, list_2_1_, list_2_2_, list_jb);
+                }
+            } else if (hacker == 1) {
+                calculate_jb_HubbardNCoserved_Hacker(X, list_jb, ihfbit, N2);
+                RecordOMPSzMid(X);
+#pragma omp parallel for default(none) reduction(+:icnt) private(ib) firstprivate(ihfbit, N2, X) shared(list_1_, list_2_1_, list_2_2_, list_jb)
+                for (ib = 0; ib < X->Check.sdim; ib++) {
+                    icnt += omp_sz_hacker(ib, ihfbit, X, list_1_, list_2_1_, list_2_2_, list_jb);
+                }
+            } else {
+                fprintf(stderr, "Error: CalcHS in ModPara file must be 0 or 1 for Hubbard model.");
+                return -1;
+            }
+            break;
+        default:
+            return -1;
+    }
+
+    *icnt_out = icnt;
+    return 0;
+}
+
+static int ComputeSzCountForKondoFamily(
+    struct BindStruct *X,
+    long unsigned int ihfbit,
+    unsigned int N2,
+    long unsigned int *list_1_,
+    long unsigned int *list_2_1_,
+    long unsigned int *list_2_2_,
+    long unsigned int *list_jb,
+    long unsigned int *icnt_out
+) {
+    int hacker;
+    long unsigned int ib;
+    long unsigned int num_loc;
+    long unsigned int icnt = 0;
+
+    switch (X->Def.iCalcModel) {
+        case KondoGC:
+            num_loc = count_localized_spins(X);
+            calculate_jb_KondoGC(X, num_loc, list_jb, ihfbit);
+#pragma omp parallel for default(none) reduction(+:icnt) private(ib) firstprivate(ihfbit, N2, X) shared(list_1_, list_2_1_, list_2_2_, list_jb)
+            for (ib = 0; ib < X->Check.sdim; ib++) {
+                icnt += omp_sz_KondoGC(ib, ihfbit, X, list_1_, list_2_1_, list_2_2_, list_jb);
+            }
+            break;
+        case KondoNConserved:
+            calculate_jb_KondoNConserved(X, list_jb, ihfbit);
+            RecordOMPSzMid(X);
+#pragma omp parallel for default(none) reduction(+:icnt) private(ib) firstprivate(ihfbit, N2, X) shared(list_1_, list_2_1_, list_2_2_, list_jb)
+            for (ib = 0; ib < X->Check.sdim; ib++) {
+                icnt += omp_sz_KondoNConserved(ib, ihfbit, X, list_1_, list_2_1_, list_2_2_, list_jb);
+            }
+            BarrierMPI();
+            break;
+        case Kondo:
+            calculate_jb_Kondo(X, list_jb, ihfbit);
+            RecordOMPSzMid(X);
+            hacker = X->Def.read_hacker;
+            if (hacker == 0) {
+#pragma omp parallel for default(none) reduction(+:icnt) private(ib) firstprivate(ihfbit, N2, X) shared(list_1_, list_2_1_, list_2_2_, list_jb)
+                for (ib = 0; ib < X->Check.sdim; ib++) {
+                    icnt += omp_sz_Kondo(ib, ihfbit, X, list_1_, list_2_1_, list_2_2_, list_jb);
+                }
+            } else if (hacker == 1) {
+#pragma omp parallel for default(none) reduction(+:icnt) private(ib) firstprivate(ihfbit, N2, X) shared(list_1_, list_2_1_, list_2_2_, list_jb)
+                for (ib = 0; ib < X->Check.sdim; ib++) {
+                    icnt += omp_sz_Kondo_hacker(ib, ihfbit, X, list_1_, list_2_1_, list_2_2_, list_jb);
+                }
+            } else {
+                fprintf(stderr, "Error: CalcHS in ModPara file must be 0 or 1 for Kondo model.");
+                return -1;
+            }
+            break;
+        default:
+            return -1;
+    }
+
+    *icnt_out = icnt;
+    return 0;
+}
+
+static int ComputeSzCountForSpin(
+    struct BindStruct *X,
+    long unsigned int ihfbit,
+    long unsigned int irght,
+    long unsigned int ilft,
+    long unsigned int ibpatn,
+    unsigned int N,
+    long unsigned int *list_1_,
+    long unsigned int *list_2_1_,
+    long unsigned int *list_2_2_,
+    long unsigned int *list_jb,
+    long int *list_2_1_Sz,
+    long int *list_2_2_Sz,
+    long unsigned int *icnt_io
+) {
+    int hacker;
+    long unsigned int ib;
+    long unsigned int icnt;
+
+    icnt = *icnt_io;
+    if (X->Def.iFlgGeneralSpin == FALSE) {
+        hacker = X->Def.read_hacker;
+        if (hacker == -1) {
+            calculate_jb_Spin_m1(X, list_jb, list_1_, list_2_1_, list_2_2_, ihfbit, irght, ilft, ibpatn, N);
+            /*
+             * Legacy CalcHS=-1 path constructs the restricted basis directly in
+             * calculate_jb_Spin_m1. Keep i_max consistent with the known target
+             * Hilbert dimension for later validation.
+             */
+            icnt = X->Check.idim_max;
+        } else if (hacker == 1) {
+            calculate_jb_Spin_Hacker(X, list_jb, ihfbit, N);
+            RecordOMPSzMid(X);
+            icnt = 0;
+#pragma omp parallel for default(none) reduction(+:icnt) private(ib) firstprivate(ihfbit, N, X, list_1_, list_2_1_, list_2_2_, list_jb)
+            for (ib = 0; ib < X->Check.sdim; ib++) {
+                icnt += omp_sz_spin_hacker(ib, ihfbit, N, X, list_1_, list_2_1_, list_2_2_, list_jb);
+            }
+        } else if (hacker == 0) {
+            calculate_jb_Spin_Old(X, list_jb, ihfbit, N);
+            RecordOMPSzMid(X);
+            icnt = 0;
+#pragma omp parallel for default(none) reduction(+:icnt) private(ib) firstprivate(ihfbit, N, X) shared(list_1_, list_2_1_, list_2_2_, list_jb)
+            for (ib = 0; ib < X->Check.sdim; ib++) {
+                icnt += omp_sz_spin(ib, ihfbit, N, X, list_1_, list_2_1_, list_2_2_, list_jb);
+            }
+        } else {
+            fprintf(stderr, "Error: CalcHS in ModPara file must be -1 or 0 or 1 for Spin model.");
+            return -1;
+        }
+    } else {
+        long unsigned int ilftdim = (X->Def.Tpow[X->Def.Nsite - 1] * X->Def.SiteToBit[X->Def.Nsite - 1]) / ihfbit;
+        calculate_jb_GeneralSpin(X, list_jb, list_2_1_Sz, list_2_2_Sz, ihfbit, ilftdim, N);
+        RecordOMPSzMid(X);
+
+        icnt = 0;
+#pragma omp parallel for default(none) reduction(+:icnt) private(ib) firstprivate(ilftdim, ihfbit, X) shared(list_1_, list_2_1_, list_2_2_, list_2_1_Sz, list_2_2_Sz, list_jb)
+        for (ib = 0; ib < ilftdim; ib++) {
+            icnt += omp_sz_GeneralSpin(ib, ihfbit, X, list_1_, list_2_1_, list_2_2_, list_2_1_Sz, list_2_2_Sz, list_jb);
+        }
+    }
+
+    *icnt_io = icnt;
+    return 0;
+}
+
+static int ComputeSzCountByModel(
+    struct BindStruct *X,
+    const long unsigned int ihfbit,
+    const long unsigned int irght,
+    const long unsigned int ilft,
+    const long unsigned int ibpatn,
+    const unsigned int N,
+    const unsigned int N2,
+    long unsigned int *list_1_,
+    long unsigned int *list_2_1_,
+    long unsigned int *list_2_2_,
+    long unsigned int *list_jb,
+    long int *list_2_1_Sz,
+    long int *list_2_2_Sz,
+    long unsigned int *icnt
+) {
+    switch (X->Def.iCalcModel) {
+        case HubbardGC:
+            *icnt = X->Def.Tpow[2 * X->Def.Nsite - 1] * 2 + 0;
+            break;
+        case SpinGC:
+            if (X->Def.iFlgGeneralSpin == FALSE) {
+                *icnt = X->Def.Tpow[X->Def.Nsite - 1] * 2 + 0;
+            } else {
+                *icnt = X->Def.Tpow[X->Def.Nsite - 1] * X->Def.SiteToBit[X->Def.Nsite - 1];
+            }
+            break;
+        case HubbardNConserved:
+        case Hubbard:
+            if (ComputeSzCountForHubbardFamily(X, ihfbit, N2, list_1_, list_2_1_, list_2_2_, list_jb, icnt) != 0) {
+                return -1;
+            }
+            break;
+        case KondoGC:
+        case KondoNConserved:
+        case Kondo:
+            if (ComputeSzCountForKondoFamily(X, ihfbit, N2, list_1_, list_2_1_, list_2_2_, list_jb, icnt) != 0) {
+                return -1;
+            }
+            break;
+        case tJ:
+        case tJNConserved:
+        case tJGC:
+            *icnt = ComputeSzCountForTJFamily(X, ihfbit, N2, list_1_, list_2_1_, list_2_2_, list_jb);
+            break;
+        case Spin:
+            if (ComputeSzCountForSpin(X, ihfbit, irght, ilft, ibpatn, N, list_1_, list_2_1_, list_2_2_, list_jb, list_2_1_Sz, list_2_2_Sz, icnt) != 0) {
+                return -1;
+            }
+            break;
+        default:
+            return -1;
+    }
+    return 0;
+}
+
 /**
  * @file   sz.c
  * 
@@ -56,143 +485,47 @@ int sz(
     long unsigned int *list_2_1_,
     long unsigned int *list_2_2_
 ){
-    FILE *fp,*fp_err;
-    char sdt[D_FileNameMax],sdt_err[D_FileNameMax];
-    long unsigned int *HilbertNumToSz;
-    long unsigned int i,icnt; 
-    long unsigned int ib,jb,ib_start,ib_end, sdim_div, sdim_rest;
-    
-    long unsigned int j;
-    long unsigned int div;
-    long unsigned int num_up,num_down;
-    long unsigned int irght,ilft,ihfbit;
-    long unsigned int *jbthread;
-
-    /*[s] for omp parall*/
-    int mythread;
-    unsigned int  all_up,all_down,tmp_res,num_threads;
-    long unsigned int tmp_1,tmp_2,tmp_3;
-    long int **comb, **comb2;
-    /*[e] for omp parall*/
-
-    /*[s] for Kondo*/
-    unsigned int N_all_up, N_all_down;
-    unsigned int all_loc;
-    long unsigned int num_loc, div_down;
-    unsigned int num_loc_up;
-    int icheck_loc;
-    int ihfSpinDown=0;
-    /*[e] for Kondo*/
-      
-    long unsigned int i_max=0;
-    double idim=0.0;
-    long unsigned int div_up;
+    FILE *fp;
+    char sdt[D_FileNameMax];
+    long unsigned int irght = 0;
+    long unsigned int ilft = 0;
+    long unsigned int ihfbit = 0;
+    long unsigned int i_max = 0;
+    long unsigned int icnt = 1;
+    long unsigned int ibpatn = 0;
+    unsigned int num_threads;
+    unsigned int N2 = 0;
+    unsigned int N = 0;
+    double idim = 0.0;
+    long int **comb;
 
     /*[s] for general spin*/
     long int *list_2_1_Sz = NULL;
     long int *list_2_2_Sz = NULL;
-    if(X->Def.iFlgGeneralSpin==TRUE){
-        list_2_1_Sz = li_1d_allocate(X->Check.sdim+2);
-        list_2_2_Sz = li_1d_allocate((X->Def.Tpow[X->Def.Nsite-1]*X->Def.SiteToBit[X->Def.Nsite-1]/X->Check.sdim)+2);
-        for(j=0; j<X->Check.sdim+2;j++){
-            list_2_1_Sz[j]=0;
-        }
-        for(j=0; j< (X->Def.Tpow[X->Def.Nsite-1]*X->Def.SiteToBit[X->Def.Nsite-1]/X->Check.sdim)+2; j++){
-            list_2_2_Sz[j]=0;
-        }
-    }
+    InitializeGeneralSpinWorkArrays(X, &list_2_1_Sz, &list_2_2_Sz);
     /*[e] for general spin*/
 
     long unsigned int *list_jb;
-    list_jb = lui_1d_allocate(X->Large.SizeOflistjb);
-    for(i=0; i<X->Large.SizeOflistjb; i++){
-        list_jb[i]=0;
-    }
+    list_jb = AllocateAndClearListJb(X);
 
-    /*hacker*/
-    int hacker;
-    long unsigned int tmp_i,tmp_j,tmp_pow,max_tmp_i;
-    long unsigned int ia,ja;
-    long unsigned int ibpatn=0;
-    /*hacker*/
-
-    int iSpnup, iMinup,iAllup;
-    unsigned int N2 = 0;
-    unsigned int N  = 0;
     fprintf(stdoutMPI, "%s", cProStartCalcSz);
     TimeKeeper(X, cFileNameSzTimeKeep, cInitalSz, "w");
     TimeKeeper(X, cFileNameTimeKeep, cInitalSz, "a");
     if(X->Check.idim_max!=0){
         /*[s] calculating the maximum size of Hilbert dimensions*/
-        switch(X->Def.iCalcModel){
-            case HubbardGC:
-            case HubbardNConserved:
-            case Hubbard:
-            case tJGC:
-            case tJNConserved:
-            case tJ:
-                N2=2*X->Def.Nsite;
-                idim = pow(2.0,N2);
-                break;
-            case KondoGC:
-            case Kondo:
-            case KondoNConserved:
-                N2  = 2*X->Def.Nsite;
-                N  =  X->Def.Nsite;
-                idim = pow(2.0,N2);
-                for(j=0;j<N;j++){
-                    fprintf(stdoutMPI, cStateLocSpin,j,X->Def.LocSpn[j]);
-                }
-                break;
-            case SpinGC:
-            case Spin:
-                N=X->Def.Nsite;
-                if(X->Def.iFlgGeneralSpin==FALSE){
-                    idim = pow(2.0, N);
-                }else{
-                    idim=1;
-                    for(j=0; j<N; j++){
-                        idim *= X->Def.SiteToBit[j];
-                    }
-                }
-                break;
-        }
+        SetupHilbertDimensionContext(X, &N2, &N, &idim);
         /*[e] calculating the maximum size of Hilbert dimensions*/
 
         comb  = li_2d_allocate(X->Def.Nsite+1,X->Def.Nsite+1); /*comb=Binomial coefficient */
         i_max = X->Check.idim_max; /*i_max, idim_max : Hilbert dimensions*/
     
         /*[s] calculating irght, ilht, ihfbit*/
-        switch(X->Def.iCalcModel){
-            case HubbardNConserved:
-            case Hubbard:
-            case tJGC:
-            case tJNConserved:
-            case tJ:
-            case KondoGC:
-            case Kondo:
-            case KondoNConserved:
-            case Spin:
-                if(X->Def.iFlgGeneralSpin==FALSE){
-                    if(GetSplitBitByModel(X->Def.Nsite, X->Def.iCalcModel, &irght, &ilft, &ihfbit)!=0){
-                        exitMPI(-1);
-                    }
-                    X->Large.irght=irght;
-                    X->Large.ilft=ilft;
-                    X->Large.ihfbit=ihfbit;
-                    //fprintf(stdoutMPI, "idim=%lf irght=%ld ilft=%ld ihfbit=%ld \n",idim,irght,ilft,ihfbit);
-                }else{
-                    ihfbit=X->Check.sdim;
-                    //fprintf(stdoutMPI, "idim=%lf ihfbit=%ld \n",idim, ihfbit);
-                }
-                break;
-            default:
-                break;
+        if (SetupSplitBitContext(X, &irght, &ilft, &ihfbit) != 0) {
+            exitMPI(-1);
         }
         /*[e] calculating irght, ilht, ihfbit*/
         
         icnt=1;
-        jb=0;
 
         if(X->Def.READ==1){
             if(Read_sz(X, irght, ilft, ihfbit, &i_max)!=0){
@@ -213,208 +546,23 @@ int sz(
 
             TimeKeeper(X, cFileNameSzTimeKeep, cOMPSzStart, "a");
             TimeKeeper(X, cFileNameTimeKeep, cOMPSzStart, "a");
-            switch(X->Def.iCalcModel){
-                case HubbardGC:
-                    icnt = X->Def.Tpow[2*X->Def.Nsite-1]*2+0;/*Tpow[2*X->Def.Nsit]=1*/
-                    break;
-                case SpinGC:
-                    if(X->Def.iFlgGeneralSpin==FALSE){
-                        icnt = X->Def.Tpow[X->Def.Nsite-1]*2+0;/*Tpow[X->Def.Nsit]=1*/
-                    }else{
-                        icnt = X->Def.Tpow[X->Def.Nsite-1]*X->Def.SiteToBit[X->Def.Nsite-1];
-                    }
-                    break;
-                case Hubbard:
-                    hacker = X->Def.read_hacker;
-                    if(hacker==0){
-                        calculate_jb_Hubbard(X,list_jb,ihfbit,N2);
-                        TimeKeeper(X, cFileNameSzTimeKeep, cOMPSzMid, "a");
-                        TimeKeeper(X, cFileNameTimeKeep, cOMPSzMid, "a");
-
-                        icnt = 0;
-                        for(ib=0;ib<X->Check.sdim;ib++){
-                            icnt += omp_sz(ib,ihfbit, X, list_1_, list_2_1_, list_2_2_, list_jb);
-                        }
-                        break;
-                    }else if(hacker==1){
-                        calculate_jb_Hubbard_Hacker(X,list_jb,ihfbit,N2);
-                        TimeKeeper(X, cFileNameSzTimeKeep, cOMPSzMid, "a");
-                        TimeKeeper(X, cFileNameTimeKeep, cOMPSzMid, "a");
-
-                        icnt = 0;
-                        #pragma omp parallel for default(none) \
-                        reduction(+:icnt) private(ib) firstprivate(ihfbit, X) \
-                        shared(list_1_, list_2_1_, list_2_2_, list_jb)
-                        for(ib=0;ib<X->Check.sdim;ib++){
-                            icnt += omp_sz_hacker(ib,ihfbit,X,list_1_, list_2_1_, list_2_2_, list_jb);
-                        }
-                        break;
-                    }else{
-                        fprintf(stderr, "Error: CalcHS in ModPara file must be 0 or 1 for Hubbard model.");
-                        return -1;
-                    }
-                case HubbardNConserved:
-                    hacker = X->Def.read_hacker;
-                    if(hacker==0){
-                        calculate_jb_HubbardNCoserved(X,list_jb,ihfbit,N2);
-                        TimeKeeper(X, cFileNameSzTimeKeep, cOMPSzMid, "a");
-                        TimeKeeper(X, cFileNameTimeKeep, cOMPSzMid, "a");
-            
-                        icnt = 0;
-                        #pragma omp parallel for default(none) \
-                        reduction(+:icnt) private(ib) firstprivate(ihfbit, N2, X) \
-                        shared(list_1_, list_2_1_, list_2_2_, list_jb) 
-                        for(ib=0;ib<X->Check.sdim;ib++){
-                            icnt+=omp_sz(ib,ihfbit, X,list_1_, list_2_1_, list_2_2_, list_jb);
-                        }
-                        break;
-                    }else if(hacker==1){
-                        calculate_jb_HubbardNCoserved_Hacker(X,list_jb,ihfbit,N2);
-                        TimeKeeper(X, cFileNameSzTimeKeep, cOMPSzMid, "a");
-                        TimeKeeper(X, cFileNameTimeKeep, cOMPSzMid, "a");
-            
-                        icnt = 0;
-                        #pragma omp parallel for default(none) \
-                        reduction(+:icnt) private(ib) firstprivate(ihfbit, N2, X) \
-                        shared(list_1_, list_2_1_, list_2_2_, list_jb) 
-                        for(ib=0;ib<X->Check.sdim;ib++){
-                            icnt+=omp_sz_hacker(ib,ihfbit, X,list_1_, list_2_1_, list_2_2_, list_jb);
-                        }
-                        break;
-                    }else{
-                        fprintf(stderr, "Error: CalcHS in ModPara file must be 0 or 1 for Hubbard model.");
-                        return -1;
-                    }
-                  case KondoGC:
-                      /*[s] this part can not be simply parallelized*/
-                      num_loc = count_localized_spins(X);
-                      calculate_jb_KondoGC(X,num_loc,list_jb,ihfbit);
-                      /*[e] this part can not be simply parallelized*/
-                      icnt    = 0; 
-                      #pragma omp parallel for default(none) \
-                      reduction(+:icnt) private(ib) firstprivate(ihfbit, N2, X) \
-                      shared(list_1_, list_2_1_, list_2_2_, list_jb)
-                      for(ib=0;ib<X->Check.sdim;ib++){
-                          icnt+=omp_sz_KondoGC(ib, ihfbit, X, list_1_, list_2_1_, list_2_2_, list_jb);
-                      }      
-                      break;
-                  case KondoNConserved:
-                      calculate_jb_KondoNConserved(X, list_jb,ihfbit);
-                      TimeKeeper(X, cFileNameSzTimeKeep, cOMPSzMid, "a");
-                      TimeKeeper(X, cFileNameTimeKeep, cOMPSzMid, "a");
-                      
-                      icnt = 0;
-                      #pragma omp parallel for default(none) \
-                      reduction(+:icnt) private(ib) firstprivate(ihfbit, N2, X) \
-                      shared(list_1_, list_2_1_, list_2_2_, list_jb)
-                      for(ib=0;ib<X->Check.sdim;ib++){
-                          icnt+=omp_sz_KondoNConserved(ib,ihfbit, X, list_1_, list_2_1_, list_2_2_, list_jb);
-                      }
-                      BarrierMPI();
-                      //printf("AAA icnt=%ld\n",icnt);
-                      break;
-                  case Kondo:
-                      calculate_jb_Kondo(X, list_jb,ihfbit);
-                      TimeKeeper(X, cFileNameSzTimeKeep, cOMPSzMid, "a");
-                      TimeKeeper(X, cFileNameTimeKeep, cOMPSzMid, "a");
-            
-                      hacker = X->Def.read_hacker;
-                      if(hacker==0){
-                          icnt = 0;
-                          #pragma omp parallel for default(none) \
-                          reduction(+:icnt) private(ib) firstprivate(ihfbit, N2, X) \
-                          shared(list_1_, list_2_1_, list_2_2_, list_jb)
-                          for(ib=0;ib<X->Check.sdim;ib++){
-                              icnt+=omp_sz_Kondo(ib,ihfbit, X, list_1_, list_2_1_, list_2_2_, list_jb);
-                          }
-                      }else if(hacker==1){
-                          icnt = 0;
-                          #pragma omp parallel for default(none) \
-                          reduction(+:icnt) private(ib) firstprivate(ihfbit, N2, X)\
-                          shared(list_1_, list_2_1_, list_2_2_, list_jb)
-                          for(ib=0;ib<X->Check.sdim;ib++){
-                              icnt+=omp_sz_Kondo_hacker(ib,ihfbit, X, list_1_, list_2_1_, list_2_2_, list_jb);
-                          }     
-                      }
-                      break;
-                  case tJ:
-                      calculate_jb_tJ(X,list_jb,ihfbit,N2);
-                      TimeKeeper(X, cFileNameSzTimeKeep, cOMPSzMid, "a");
-                      TimeKeeper(X, cFileNameTimeKeep, cOMPSzMid, "a");
-                      icnt = 0;
-                      for(ib=0;ib<X->Check.sdim;ib++){
-                          icnt += omp_sz_tJ(ib,ihfbit, X, list_1_, list_2_1_, list_2_2_, list_jb);
-                      }
-                      break;
-                  case tJNConserved:
-                      calculate_jb_tJNConserved(X,list_jb,ihfbit,N2);
-                      TimeKeeper(X, cFileNameSzTimeKeep, cOMPSzMid, "a");
-                      TimeKeeper(X, cFileNameTimeKeep, cOMPSzMid, "a");
-                      icnt = 0;
-                      for(ib=0;ib<X->Check.sdim;ib++){
-                          icnt += omp_sz_tJ(ib,ihfbit, X, list_1_, list_2_1_, list_2_2_, list_jb);
-                      }
-                      break;
-                  case tJGC:
-                      calculate_jb_tJGC(X,list_jb,ihfbit,N2);
-                      TimeKeeper(X, cFileNameSzTimeKeep, cOMPSzMid, "a");
-                      TimeKeeper(X, cFileNameTimeKeep, cOMPSzMid, "a");
-                      icnt = 0;
-                      for(ib=0;ib<X->Check.sdim;ib++){
-                          icnt += omp_sz_tJ(ib,ihfbit, X, list_1_, list_2_1_, list_2_2_, list_jb);
-                      }
-                      break;
-                  case Spin:
-                      if(X->Def.iFlgGeneralSpin==FALSE){
-                          hacker = X->Def.read_hacker;
-                          if(hacker        ==  -1){
-                              calculate_jb_Spin_m1(X,list_jb,list_1_,list_2_1_,list_2_2_,ihfbit,irght,ilft,ibpatn, N);
-                          }else if(hacker  ==  1){
-                              calculate_jb_Spin_Hacker(X,list_jb,ihfbit,N);
-                              TimeKeeper(X, cFileNameSzTimeKeep, cOMPSzMid, "a");
-                              TimeKeeper(X, cFileNameTimeKeep, cOMPSzMid, "a");
-                              icnt = 0;
-                              #pragma omp parallel for default(none)\
-                              reduction(+:icnt) private(ib) \
-                              firstprivate(ihfbit, N, X, list_1_, list_2_1_, list_2_2_, list_jb)
-                              for(ib=0;ib<X->Check.sdim;ib++){
-                                  icnt+=omp_sz_spin_hacker(ib,ihfbit,N,X, list_1_, list_2_1_, list_2_2_, list_jb);
-                              }
-                          }else if(hacker  ==  0){
-                              calculate_jb_Spin_Old(X,list_jb,ihfbit,N);
-                              //#pragma omp barrier
-                              TimeKeeper(X, cFileNameSzTimeKeep, cOMPSzMid, "a");
-                              TimeKeeper(X, cFileNameTimeKeep, cOMPSzMid, "a");
-            
-                              icnt = 0;
-                              #pragma omp parallel for default(none) reduction(+:icnt)\
-                              private(ib) firstprivate(ihfbit, N, X)\
-                              shared(list_1_, list_2_1_, list_2_2_, list_jb)
-                              for(ib=0;ib<X->Check.sdim;ib++){
-                                  icnt+=omp_sz_spin(ib,ihfbit,N,X,list_1_, list_2_1_, list_2_2_, list_jb);
-                              }
-                          }else{
-                              fprintf(stderr, "Error: CalcHS in ModPara file must be -1 or 0 or 1 for Spin model.");
-                              return -1;
-                          }
-                      }else{
-                          long unsigned int ilftdim = (X->Def.Tpow[X->Def.Nsite-1]*X->Def.SiteToBit[X->Def.Nsite-1])/ihfbit;
-                          calculate_jb_GeneralSpin(X,list_jb,list_2_1_Sz,list_2_2_Sz,ihfbit,ilftdim,N);
-                          TimeKeeper(X, cFileNameSzTimeKeep, cOMPSzMid, "a");
-                          TimeKeeper(X, cFileNameTimeKeep, cOMPSzMid, "a");
-            
-                          icnt = 0;
-                          #pragma omp parallel for default(none)\
-                          reduction(+:icnt) private(ib) firstprivate(ilftdim, ihfbit,  X)\
-                          shared(list_1_, list_2_1_, list_2_2_, list_2_1_Sz, list_2_2_Sz,list_jb)
-                          for(ib=0;ib<ilftdim; ib++){
-                              icnt+=omp_sz_GeneralSpin(ib,ihfbit,X, list_1_, list_2_1_, list_2_2_, list_2_1_Sz, list_2_2_Sz,list_jb);
-                          }
-                      }
-                      break;
-                  default:
-                      exitMPI(-1);
-              }    
+            if (ComputeSzCountByModel(
+                    X,
+                    ihfbit,
+                    irght,
+                    ilft,
+                    ibpatn,
+                    N,
+                    N2,
+                    list_1_,
+                    list_2_1_,
+                    list_2_2_,
+                    list_jb,
+                    list_2_1_Sz,
+                    list_2_2_Sz,
+                    &icnt) != 0) {
+                return -1;
+            }
               i_max=icnt;
               //printf("BBB i_max %ld icnt=%ld\n",i_max,icnt);
               //fprintf(stdoutMPI, "Debug: Xicnt=%ld \n",icnt);
@@ -437,36 +585,14 @@ int sz(
               }
           }
           */
-          //Error message
-          if(i_max!=X->Check.idim_max){
-            //printf("DDD %d %lu %lu  \n",i_max, X->Check.idim_max);
-            fprintf(stderr, "%s", cErrSz);
-            fprintf(stderr, cErrSz_ShowDim, i_max, X->Check.idim_max);
-            strcpy(sdt_err,cFileNameErrorSz);
-            if(childfopenMPI(sdt_err,"a",&fp_err)!=0){
-              exitMPI(-1);
-            }
-            fprintf(fp_err, "%s",cErrSz_OutFile);
-            fclose(fp_err);
-            exitMPI(-1);
-          }
+          ValidateSzDimensionOrAbort(i_max, X->Check.idim_max);
           free_li_2d_allocate(comb);
     }
     fprintf(stdoutMPI, "%s", cProEndCalcSz);
     free(list_jb);
 
     /* NConserved -> Normal */
-    if(X->Def.iFlgCalcSpec == CALCSPEC_NOT){
-        if(X->Def.iCalcModel  == HubbardNConserved){
-            X->Def.iCalcModel =  Hubbard;
-        }
-        if(X->Def.iCalcModel  == KondoNConserved){
-            X->Def.iCalcModel  = Kondo;
-        }
-        if(X->Def.iCalcModel  == tJNConserved){
-            X->Def.iCalcModel  = tJ;
-        }
-    }
+    ConvertNConservedModelToNormalIfNeeded(X);
 
     if(X->Def.iFlgGeneralSpin==TRUE){
         free(list_2_1_Sz);
@@ -925,10 +1051,7 @@ int omp_sz_KondoNConserved(
     }else{    
       num_up   += div_up;        
       num_down += div_down;
-      if(X->Def.Nsite%2==1 && j==(X->Def.Nsite/2)){
-        icheck_loc= icheck_loc;
-      }
-      else{
+      if(!(X->Def.Nsite%2==1 && j==(X->Def.Nsite/2))){
         icheck_loc   = icheck_loc*(div_up^div_down);// exclude doubllly ocupited site
       }
     }
@@ -955,10 +1078,7 @@ int omp_sz_KondoNConserved(
         }else{    
           num_up   += div_up;        
           num_down += div_down;  
-          if(X->Def.Nsite%2==1 && j==(X->Def.Nsite/2)){
-            icheck_loc= icheck_loc;
-          }
-          else{
+          if(!(X->Def.Nsite%2==1 && j==(X->Def.Nsite/2))){
             icheck_loc   = icheck_loc*(div_up^div_down);// exclude doubllly ocupited site
           }
         }
@@ -1041,10 +1161,7 @@ int omp_sz_Kondo(
     }else{    
       num_up   += div_up;        
       num_down += div_down;
-      if(X->Def.Nsite%2==1 && j==(X->Def.Nsite/2)){
-        icheck_loc= icheck_loc;
-      }
-      else{
+      if(!(X->Def.Nsite%2==1 && j==(X->Def.Nsite/2))){
         icheck_loc   = icheck_loc*(div_up^div_down);// exclude doubllly ocupited site
       }
     }
@@ -1071,10 +1188,7 @@ int omp_sz_Kondo(
         }else{    
           num_up   += div_up;        
           num_down += div_down;  
-          if(X->Def.Nsite%2==1 && j==(X->Def.Nsite/2)){
-            icheck_loc= icheck_loc;
-          }
-          else{
+          if(!(X->Def.Nsite%2==1 && j==(X->Def.Nsite/2))){
             icheck_loc   = icheck_loc*(div_up^div_down);// exclude doubllly ocupited site
           }
         }
@@ -1153,10 +1267,7 @@ int omp_sz_Kondo_hacker(
     }else{    
       num_up   += div_up;        
       num_down += div_down;
-      if(X->Def.Nsite%2==1 && j==(X->Def.Nsite/2)){
-        icheck_loc= icheck_loc;
-      }
-      else{
+      if(!(X->Def.Nsite%2==1 && j==(X->Def.Nsite/2))){
         icheck_loc   = icheck_loc*(div_up^div_down);// exclude doubly occupied site
       }
     }
@@ -1190,10 +1301,7 @@ int omp_sz_Kondo_hacker(
           }else{    
             num_up   += div_up;        
             num_down += div_down;  
-            if(X->Def.Nsite%2==1 && j==(X->Def.Nsite/2)){
-              icheck_loc= icheck_loc;
-            }
-            else{
+            if(!(X->Def.Nsite%2==1 && j==(X->Def.Nsite/2))){
               icheck_loc   = icheck_loc*(div_up^div_down);// exclude doubllly ocupited site
             }
           }
@@ -1262,10 +1370,7 @@ int omp_sz_KondoGC(
     div_down  = i & X->Def.Tpow[2*j+1];
     div_down  = div_down/X->Def.Tpow[2*j+1];
     if(X->Def.LocSpn[j] !=  ITINERANT){
-      if(X->Def.Nsite%2==1 && j==(X->Def.Nsite/2)){
-        icheck_loc= icheck_loc;
-      }
-      else{
+      if(!(X->Def.Nsite%2==1 && j==(X->Def.Nsite/2))){
         icheck_loc   = icheck_loc*(div_up^div_down);// exclude doubllly ocupited site
       }
     }
@@ -1282,10 +1387,7 @@ int omp_sz_KondoGC(
         div_down  = i & X->Def.Tpow[2*j+1];
         div_down  = div_down/X->Def.Tpow[2*j+1];
         if(X->Def.LocSpn[j] !=  ITINERANT){
-          if(X->Def.Nsite%2==1 && j==(X->Def.Nsite/2)){
-            icheck_loc= icheck_loc;
-          }
-          else{
+          if(!(X->Def.Nsite%2==1 && j==(X->Def.Nsite/2))){
             icheck_loc   = icheck_loc*(div_up^div_down);// exclude doubllly ocupited site
           }
         }
@@ -1645,9 +1747,8 @@ void calculate_jb_GeneralSpin(struct BindStruct *X, long unsigned int *list_jb, 
 
 void calculate_jb_Spin_m1(struct BindStruct *X, long unsigned int *list_jb, long unsigned int *list_1_, long unsigned int *list_2_1_,long unsigned int *list_2_2_,\
 long unsigned int ihfbit,long unsigned int irght,long unsigned int ilft,long unsigned int ibpatn, unsigned int N){
-    long unsigned int ia,ja,ib,jb,div_up,i,j,tmp_1;
-    long unsigned int tmp_pow,tmp_i,tmp_j,icnt,max_tmp_i;
-    int num_up,all_up;
+    long unsigned int ia, ja, ib, jb;
+    long unsigned int tmp_pow, tmp_i, tmp_j, icnt, max_tmp_i;
 
     icnt    = 1;
     tmp_pow = 1;
@@ -1714,6 +1815,7 @@ void calculate_jb_Spin_Old(struct BindStruct *X, long unsigned int *list_jb, lon
     int num_up,all_up;
     long int **comb;
     comb = li_2d_allocate(X->Def.Nsite+1,X->Def.Nsite+1);
+    jb   = 0;
     for(ib=0;ib<X->Check.sdim;ib++){
         list_jb[ib] = jb;
         i           = ib*ihfbit;
@@ -1730,244 +1832,256 @@ void calculate_jb_Spin_Old(struct BindStruct *X, long unsigned int *list_jb, lon
     free_li_2d_allocate(comb);
 }
 
+static void GetKondoSiteOccupations(const struct BindStruct *X,
+                                    const long unsigned int state,
+                                    const long unsigned int site,
+                                    long unsigned int *div_up,
+                                    long unsigned int *div_down) {
+    *div_up = state & X->Def.Tpow[2 * site];
+    *div_up = *div_up / X->Def.Tpow[2 * site];
+    *div_down = state & X->Def.Tpow[2 * site + 1];
+    *div_down = *div_down / X->Def.Tpow[2 * site + 1];
+}
+
+static int CountKondoRightHalfOccupations(const struct BindStruct *X,
+                                          const long unsigned int state,
+                                          int *num_up,
+                                          int *num_down) {
+    long unsigned int j;
+    long unsigned int div_up;
+    long unsigned int div_down;
+    int icheck_loc = 1;
+
+    *num_up = 0;
+    *num_down = 0;
+    for (j = X->Def.Nsite / 2; j < X->Def.Nsite; j++) {
+        GetKondoSiteOccupations(X, state, j, &div_up, &div_down);
+        if (X->Def.LocSpn[j] == ITINERANT) {
+            *num_up += (int)div_up;
+            *num_down += (int)div_down;
+            continue;
+        }
+
+        *num_up += (int)div_up;
+        *num_down += (int)div_down;
+        if (X->Def.Nsite % 2 == 1 && j == (X->Def.Nsite / 2)) {
+            if (div_down == 0) {
+                *num_up += 1;
+            }
+        } else {
+            icheck_loc *= (int)(div_up ^ div_down); /* exclude empty or doubly occupied site */
+        }
+    }
+    return icheck_loc;
+}
+
+static void GetKondoHalfBitCombinationWindow(const struct BindStruct *X,
+                                             const int num_loc,
+                                             int *all_loc,
+                                             int *all_up,
+                                             int *all_down) {
+    int tmp_res = X->Def.Nsite % 2;
+
+    *all_loc = X->Def.NLocSpn - num_loc;
+    *all_up = (X->Def.Nsite + tmp_res) / 2 - *all_loc;
+    *all_down = (X->Def.Nsite - tmp_res) / 2 - *all_loc;
+    if (X->Def.Nsite % 2 == 1 && X->Def.LocSpn[X->Def.Nsite / 2] != ITINERANT) {
+        *all_up = X->Def.Nsite / 2 - *all_loc;
+        *all_down = X->Def.Nsite / 2 - *all_loc;
+    }
+}
+
+static long unsigned int ComputeKondoFixedParticleContribution(const struct BindStruct *X,
+                                                               const int num_up,
+                                                               const int num_down,
+                                                               const int all_loc,
+                                                               const int all_up,
+                                                               const int all_down,
+                                                               long int **comb) {
+    int num_loc_up;
+    long unsigned int tmp_1;
+    long unsigned int tmp_2;
+    long unsigned int tmp_3;
+    long unsigned int contribution = 0;
+
+    for (num_loc_up = 0; num_loc_up <= all_loc; num_loc_up++) {
+        tmp_1 = Binomial(all_loc, num_loc_up, comb, all_loc);
+        tmp_2 = Binomial(all_up, X->Def.Nup - num_up - num_loc_up, comb, all_up);
+        tmp_3 = Binomial(all_down, X->Def.Ndown - num_down - (all_loc - num_loc_up), comb, all_down);
+        contribution += tmp_1 * tmp_2 * tmp_3;
+    }
+    return contribution;
+}
+
+static int HasValidKondoGCLocalizedConfiguration(const struct BindStruct *X,
+                                                 const long unsigned int state) {
+    long unsigned int j;
+    long unsigned int div_up;
+    long unsigned int div_down;
+    int icheck_loc = 1;
+
+    for (j = (X->Def.Nsite + 1) / 2; j < X->Def.Nsite; j++) {
+        GetKondoSiteOccupations(X, state, j, &div_up, &div_down);
+        if (X->Def.LocSpn[j] != ITINERANT) {
+            if (!(X->Def.Nsite % 2 == 1 && j == (X->Def.Nsite / 2))) {
+                icheck_loc *= (int)(div_up ^ div_down); /* exclude doubly occupied site */
+            }
+        }
+    }
+    return icheck_loc;
+}
+
 void calculate_jb_Kondo(struct BindStruct *X, long unsigned int *list_jb, long unsigned int ihfbit){
-    long unsigned int jb = 0,i,ib,j;
-    long unsigned int div_up, div_down,ihfSpinDown;
-    int N_all_up, N_all_down;
-    int num_up, num_down, icheck_loc;
-    int all_up, all_down, all_loc,tmp_res,num_loc,num_loc_up,num_loc_down;
-    long unsigned int tmp_1,tmp_2,tmp_3;
+    long unsigned int jb = 0;
+    long unsigned int i;
+    long unsigned int ib;
+    int num_up;
+    int num_down;
+    int num_loc;
+    int all_loc;
+    int all_up;
+    int all_down;
     long int **comb;
 
     comb = li_2d_allocate(X->Def.Nsite+1,X->Def.Nsite+1);
-    N_all_up   = X->Def.Nup;
-    N_all_down = X->Def.Ndown;
-    //printf("DEBUG N_all_up N_all_down Ne %d %d %d\n",N_all_up,N_all_down,X->Def.Ne);
-    fprintf(stdoutMPI, cStateNupNdown, N_all_up,N_all_down);
-            
-    jb      = 0;
-    num_loc = 0;
-    for(j=X->Def.Nsite/2; j< X->Def.Nsite ;j++){// counting localized # of spins
-        if(X->Def.LocSpn[j] != ITINERANT){
-            num_loc += 1;
-        }
-    }
-    //printf("DEBUG num_loc %d  \n",num_loc);
+    fprintf(stdoutMPI, cStateNupNdown, X->Def.Nup, X->Def.Ndown);
+
+    num_loc = count_localized_spins(X);
+    GetKondoHalfBitCombinationWindow(X, num_loc, &all_loc, &all_up, &all_down);
     for(ib=0;ib<X->Check.sdim;ib++){ //sdim = 2^(N/2)
         list_jb[ib] = jb;
-        //printf("DEBUG ib %lu jb %lu %lu\n",ib,jb,X->Large.SizeOflistjb);
         i           = ib*ihfbit; // ihfbit=pow(2,((Nsite+1)/2))
-        num_up      = 0;
-        num_down    = 0;
-        icheck_loc  = 1;
-        //printf("DEBUG num_loc %lu %d i=%lu %lu\n",ib,X->Def.Nsite,i,ihfbit);
-            
-        for(j=X->Def.Nsite/2; j< X->Def.Nsite ;j++){
-            //printf("DEBUG j=%lu %d %d\n",j,X->Def.LocSpn[j],ITINERANT);
-            div_up    = i & X->Def.Tpow[2*j];
-            div_up    = div_up/X->Def.Tpow[2*j];
-            div_down  = i & X->Def.Tpow[2*j+1];
-            div_down  = div_down/X->Def.Tpow[2*j+1];
-            if(X->Def.LocSpn[j] == ITINERANT){
-                num_up   += div_up;        
-                num_down += div_down;  
-            }else{    
-                /*this part may not be used*/
-                num_up   += div_up;     
-                num_down += div_down;
-                if(X->Def.Nsite%2==1 && j==(X->Def.Nsite/2)){ // odd site
-                    icheck_loc  = icheck_loc;
-                    ihfSpinDown = div_down;
-                    if(div_down ==0){
-                        num_up += 1;
-                    }
-                }else{
-                    icheck_loc   = icheck_loc*(div_up^div_down);// exclude empty or doubly occupied site
-                }
-            }
-        }
-            
-        if(icheck_loc == 1){ // itinerant of local spins without holon or doublon
-            tmp_res  = X->Def.Nsite%2; // even Ns-> 0, odd Ns -> 1
-            all_loc  = X->Def.NLocSpn-num_loc; // # of local spins
-            all_up   = (X->Def.Nsite+tmp_res)/2-all_loc;
-            all_down = (X->Def.Nsite-tmp_res)/2-all_loc;
-            if(X->Def.Nsite%2==1 && X->Def.LocSpn[X->Def.Nsite/2] != ITINERANT){
-                all_up   = (X->Def.Nsite)/2-all_loc;
-                all_down = (X->Def.Nsite)/2-all_loc;
-            }
-            //printf("all_loc %d all_up %d  all_down %d \n",all_loc,all_up,all_down);
-     
-            for(num_loc_up=0; num_loc_up <= all_loc; num_loc_up++){
-                tmp_1 = Binomial(all_loc, num_loc_up, comb, all_loc);
-                if( X->Def.Nsite%2==1 && X->Def.LocSpn[X->Def.Nsite/2] != ITINERANT){
-                    if(ihfSpinDown !=0){
-                        tmp_2 = Binomial(all_up, X->Def.Nup-num_up-num_loc_up, comb, all_up);
-                        tmp_3 = Binomial(all_down, X->Def.Ndown-num_down-(all_loc-num_loc_up), comb, all_down);
-                    }else{
-                        tmp_2 = Binomial(all_up, X->Def.Nup-num_up-num_loc_up, comb, all_up);
-                        tmp_3 = Binomial(all_down, X->Def.Ndown-num_down-(all_loc-num_loc_up), comb, all_down);
-                    }
-                }else{
-                    tmp_2 = Binomial(all_up, X->Def.Nup-num_up-num_loc_up, comb, all_up);
-                    tmp_3 = Binomial(all_down, X->Def.Ndown-num_down-(all_loc-num_loc_up), comb, all_down);
-                }
-                jb  += tmp_1*tmp_2*tmp_3;
-            }
+
+        if (CountKondoRightHalfOccupations(X, i, &num_up, &num_down) == 1) {
+            jb += ComputeKondoFixedParticleContribution(X, num_up, num_down, all_loc, all_up, all_down, comb);
         }
     }
     free_li_2d_allocate(comb);
 }
 
 void calculate_jb_KondoNConserved(struct BindStruct *X, long unsigned int *list_jb, long unsigned int ihfbit){
-    long unsigned int jb = 0,i,ib,j;
-    long unsigned int div_up, div_down,ihfSpinDown;
-    int Ne;
-    int num_up, num_down, icheck_loc;
-    int all_up, all_down, all_loc,tmp_res,num_loc,num_loc_up,num_loc_down;
-    long unsigned int tmp_1,tmp_2,tmp_3;
-    int all_cond,all_cond_up,all_cond_down,num_cond;
+    long unsigned int jb = 0;
+    long unsigned int i;
+    long unsigned int ib;
+    int num_up;
+    int num_down;
+    int all_loc;
+    int num_loc;
 
-    Ne   = X->Def.Ne;
-            
-    jb      = 0;
-    num_loc = 0;
-    for(j=X->Def.Nsite/2; j< X->Def.Nsite ;j++){// counting localized # of spins
-        if(X->Def.LocSpn[j] != ITINERANT){
-            num_loc += 1;
-        }
-    }
-    //printf("DEBUG num_loc %d  \n",num_loc);
-    all_loc     = X->Def.NLocSpn;
+    num_loc = count_localized_spins(X);
+    all_loc = X->Def.NLocSpn-num_loc;
     for(ib=0;ib<X->Check.sdim;ib++){ //sdim = 2^(N/2)
         list_jb[ib] = jb;
         i           = ib*ihfbit; // ihfbit=pow(2,((Nsite+1)/2))
-        num_up      = 0;
-        num_down    = 0;
-        icheck_loc  = 1;
-            
-        for(j=X->Def.Nsite/2; j< X->Def.Nsite ;j++){
-            div_up    = i & X->Def.Tpow[2*j];
-            div_up    = div_up/X->Def.Tpow[2*j];
-            div_down  = i & X->Def.Tpow[2*j+1];
-            div_down  = div_down/X->Def.Tpow[2*j+1];
-            if(X->Def.LocSpn[j] == ITINERANT){
-                num_up   += div_up;        
-                num_down += div_down;  
-            }else{    
-                /*this part may not be used*/
-                num_up   += div_up;     
-                num_down += div_down;
-                if(X->Def.Nsite%2==1 && j==(X->Def.Nsite/2)){ // odd site
-                    icheck_loc  = icheck_loc;
-                    ihfSpinDown = div_down;
-                    if(div_down ==0){
-                        num_up += 1;
-                    }
-                }else{
-                    icheck_loc   = icheck_loc*(div_up^div_down);// exclude empty or doubly occupied site
-                }
-            }
-        }
-            
-        if(icheck_loc == 1){ // itinerant of local spins without holon or doublon
-            tmp_res  = X->Def.Nsite%2; // even Ns-> 0, odd Ns -> 1
-            all_loc  = X->Def.NLocSpn-num_loc; // # of local spins
-            all_up   = (X->Def.Nsite+tmp_res)/2-all_loc;
-            all_down = (X->Def.Nsite-tmp_res)/2-all_loc;
-            if(X->Def.Nsite%2==1 && X->Def.LocSpn[X->Def.Nsite/2] != ITINERANT){
-                all_up   = (X->Def.Nsite)/2-all_loc;
-                all_down = (X->Def.Nsite)/2-all_loc;
-            }
-            //printf("all_loc %d all_up %d  all_down %d Ne %d Nsite %d\n",all_loc,all_up,all_down,X->Def.Ne,X->Def.Nsite);
-            if (num_up+num_down==X->Def.Ne-all_loc){
-               jb       += X->Def.Tpow[all_loc];
+
+        if (CountKondoRightHalfOccupations(X, i, &num_up, &num_down) == 1) {
+            if (num_up + num_down == X->Def.Ne - all_loc) {
+                jb += X->Def.Tpow[all_loc];
             }
         }
     }
-/*           
-        list_jb[ib] = jb;
-        i           = ib*ihfbit; // ihfbit=pow(2,((Nsite+1)/2))
-        num_up      = 0;
-        num_down    = 0;
-        for(j=X->Def.Nsite/2; j< X->Def.Nsite ;j++){
-            //printf("DEBUG j=%lu %d %d\n",j,X->Def.LocSpn[j],ITINERANT);
-            div_up    = i & X->Def.Tpow[2*j];
-            div_up    = div_up/X->Def.Tpow[2*j];
-            div_down  = i & X->Def.Tpow[2*j+1];
-            div_down  = div_down/X->Def.Tpow[2*j+1];
-            if(X->Def.LocSpn[j] == ITINERANT){
-                num_up   += div_up;        
-                num_down += div_down;  
-            }
-        }
-        if (num_up+num_down==X->Def.Ne-all_loc){
-            jb       += X->Def.Tpow[all_loc];
-        }
-*/
 }
 
 void calculate_jb_KondoGC(struct BindStruct *X, int num_loc, long unsigned int *list_jb, long unsigned int ihfbit){
     long unsigned int jb = 0;
+    long unsigned int gc_increment;
+
+    if(X->Def.Nsite%2==1 && X->Def.LocSpn[X->Def.Nsite/2] != ITINERANT){
+        gc_increment = X->Def.Tpow[X->Def.Nsite-1-(X->Def.NLocSpn-num_loc)];
+    }else{
+        gc_increment = X->Def.Tpow[X->Def.Nsite-(X->Def.NLocSpn-num_loc)];
+    }
+
     for(long unsigned int ib=0;ib < X->Check.sdim;ib++){
-        list_jb[ib]         = jb;
         long unsigned int i = ib*ihfbit;
-        int icheck_loc      = 1;
-        for(long unsigned int j=(X->Def.Nsite+1)/2; j< X->Def.Nsite ;j++){
-            long unsigned int div_up    = i & X->Def.Tpow[2*j];
-            div_up                      = div_up/X->Def.Tpow[2*j];
-            long unsigned int div_down  = i & X->Def.Tpow[2*j+1];
-            div_down                    = div_down/X->Def.Tpow[2*j+1];
-            if(X->Def.LocSpn[j] != ITINERANT){
-                if(X->Def.Nsite%2==1 && j==(X->Def.Nsite/2)){
-                    icheck_loc  = icheck_loc;
-                }else{
-                    icheck_loc  = icheck_loc*(div_up^div_down);// exclude doubllly ocupited site
-                }
-            }
-        }
-        if(icheck_loc == 1){
-            if(X->Def.Nsite%2==1 && X->Def.LocSpn[X->Def.Nsite/2] != ITINERANT){
-                jb += X->Def.Tpow[X->Def.Nsite-1-(X->Def.NLocSpn-num_loc)];
-            }else{
-                jb += X->Def.Tpow[X->Def.Nsite-(X->Def.NLocSpn-num_loc)];
-            }
+        list_jb[ib]         = jb;
+
+        if(HasValidKondoGCLocalizedConfiguration(X, i) == 1){
+            jb += gc_increment;
         }
     }
+}
+
+static void GetHalfBitSiteCounts(const struct BindStruct *X, int *all_up, int *all_down) {
+    int tmp_res = X->Def.Nsite % 2;
+    *all_up = (X->Def.Nsite + tmp_res) / 2;
+    *all_down = (X->Def.Nsite - tmp_res) / 2;
+}
+
+static void CountHalfBitSpinOccupations(const struct BindStruct *X,
+                                        const unsigned int N2,
+                                        const long unsigned int state,
+                                        int *num_up,
+                                        int *num_down) {
+    long unsigned int div;
+    long unsigned int j;
+
+    *num_up = 0;
+    for (j = 0; j <= N2 - 2; j += 2) {
+        div = state & X->Def.Tpow[j];
+        div = div / X->Def.Tpow[j];
+        *num_up += (int)div;
+    }
+
+    *num_down = 0;
+    for (j = 1; j <= N2 - 1; j += 2) {
+        div = state & X->Def.Tpow[j];
+        div = div / X->Def.Tpow[j];
+        *num_down += (int)div;
+    }
+}
+
+static long unsigned int ComputeHubbardFixedParticleContribution(const struct BindStruct *X,
+                                                                 const int num_up,
+                                                                 const int num_down,
+                                                                 long int **comb,
+                                                                 const int all_up,
+                                                                 const int all_down) {
+    long unsigned int tmp_1;
+    long unsigned int tmp_2;
+
+    tmp_1 = Binomial(all_up, X->Def.Nup - num_up, comb, all_up);
+    tmp_2 = Binomial(all_down, X->Def.Ndown - num_down, comb, all_down);
+    return tmp_1 * tmp_2;
+}
+
+static long unsigned int ComputeHubbardNConservedContribution(const struct BindStruct *X,
+                                                              const int num_up,
+                                                              const int num_down,
+                                                              long int **comb,
+                                                              const int all_up,
+                                                              const int all_down,
+                                                              const int iMinup,
+                                                              const int iAllup) {
+    int iSpnup;
+    long unsigned int tmp_1;
+    long unsigned int tmp_2;
+    long unsigned int contribution = 0;
+
+    for (iSpnup = iMinup; iSpnup <= iAllup; iSpnup++) {
+        tmp_1 = Binomial(all_up, iSpnup - num_up, comb, all_up);
+        tmp_2 = Binomial(all_down, X->Def.Ne - iSpnup - num_down, comb, all_down);
+        contribution += tmp_1 * tmp_2;
+    }
+    return contribution;
 }
 
 
 void calculate_jb_Hubbard(struct BindStruct *X,long unsigned int *list_jb, long unsigned int ihfbit, unsigned int N2){
     /*[s] this part can not be parallelized*/
-    long unsigned int jb = 0,div,i,j,tmp_1,tmp_2;
+    long unsigned int jb = 0, i;
     long int **comb;
-    int num_up,num_down;
-    int tmp_res,all_up,all_down;
+    int num_up, num_down;
+    int all_up, all_down;
+
+    GetHalfBitSiteCounts(X, &all_up, &all_down);
     comb = li_2d_allocate(X->Def.Nsite+1,X->Def.Nsite+1);
     for(long unsigned ib=0;ib<X->Check.sdim;ib++){ // sdim = 2^(N/2)
         list_jb[ib] = jb;
         i           = ib*ihfbit;
-        //[s] counting # of up and down electrons
-        num_up      = 0;
-        for(j=0;j<=N2-2;j+=2){ // even -> up spin
-            div      = i & X->Def.Tpow[j];
-            div      = div/X->Def.Tpow[j];
-            num_up  += div;
-        }
-        num_down=0;
-        for(j=1;j<=N2-1;j+=2){ // odd -> down spin
-            div=i & X->Def.Tpow[j];
-            div=div/X->Def.Tpow[j];
-            num_down+=div;
-        }
-        //[e] counting # of up and down electrons
-        tmp_res  = X->Def.Nsite%2; // even Ns-> 0, odd Ns -> 1
-        all_up   = (X->Def.Nsite+tmp_res)/2;
-        all_down = (X->Def.Nsite-tmp_res)/2;
-          
-        tmp_1 = Binomial(all_up,X->Def.Nup-num_up,comb,all_up);
-        tmp_2 = Binomial(all_down,X->Def.Ndown-num_down,comb,all_down);
-        jb   += tmp_1*tmp_2;
+
+        CountHalfBitSpinOccupations(X, N2, i, &num_up, &num_down);
+        jb += ComputeHubbardFixedParticleContribution(X, num_up, num_down, comb, all_up, all_down);
     }
     free_li_2d_allocate(comb);
     /*[e] this part can not be parallelized*/
@@ -1975,15 +2089,16 @@ void calculate_jb_Hubbard(struct BindStruct *X,long unsigned int *list_jb, long 
 
 void calculate_jb_Hubbard_Hacker(struct BindStruct *X,long unsigned int *list_jb, long unsigned int ihfbit, unsigned int N2){
     long unsigned int sdim_div,sdim_rest,ib_start,ib_end;
-    long unsigned int i,ib,j,jb,div,tmp_res,tmp_1,tmp_2;
+    long unsigned int i,ib,j,jb;
     int  mythread,num_up,num_down,all_up,all_down;
     long int **comb2;
     long unsigned int *jbthread;
 
+    GetHalfBitSiteCounts(X, &all_up, &all_down);
     jbthread = lui_1d_allocate(nthreads);
     #pragma omp parallel default(none) \
-    shared(X,list_jb,ihfbit,N2,nthreads,jbthread) \
-    private(ib,i,j,num_up,num_down,div,tmp_res,tmp_1,tmp_2,jb,all_up,all_down, \
+    shared(X,list_jb,ihfbit,N2,nthreads,jbthread,all_up,all_down) \
+    private(ib,i,j,num_up,num_down,jb, \
     comb2,mythread,sdim_div,sdim_rest,ib_start,ib_end)
     {
         jb = 0;
@@ -2006,26 +2121,9 @@ void calculate_jb_Hubbard_Hacker(struct BindStruct *X,long unsigned int *list_jb
         for(ib=ib_start;ib<ib_end;ib++){
             list_jb[ib] = jb;
             i           = ib*ihfbit;
-            num_up      = 0;
-            for(j=0;j<=N2-2;j+=2){
-                div     = i & X->Def.Tpow[j];
-                div     = div/X->Def.Tpow[j];
-                num_up += div;
-            }
-            num_down=0;
-            for(j=1;j<=N2-1;j+=2){
-                div=i & X->Def.Tpow[j];
-                div=div/X->Def.Tpow[j];
-                num_down+=div;
-            }
-                  
-            tmp_res  = X->Def.Nsite%2; // even Ns-> 0, odd Ns -> 1
-            all_up   = (X->Def.Nsite+tmp_res)/2;
-            all_down = (X->Def.Nsite-tmp_res)/2;
-                  
-            tmp_1 = Binomial(all_up,X->Def.Nup-num_up,comb2,all_up);
-            tmp_2 = Binomial(all_down,X->Def.Ndown-num_down,comb2,all_down);
-            jb   += tmp_1*tmp_2;
+
+            CountHalfBitSpinOccupations(X, N2, i, &num_up, &num_down);
+            jb += ComputeHubbardFixedParticleContribution(X, num_up, num_down, comb2, all_up, all_down);
         }
         free_li_2d_allocate(comb2);
         if(mythread != nthreads-1) jbthread[mythread+1] = jb;
@@ -2045,58 +2143,38 @@ void calculate_jb_Hubbard_Hacker(struct BindStruct *X,long unsigned int *list_jb
 }
 
 void calculate_jb_HubbardNCoserved(struct BindStruct *X,long unsigned int *list_jb, long unsigned int ihfbit, unsigned int N2){
-    long unsigned int sdim_div,sdim_rest,ib_start,ib_end;
-    long unsigned int i,ib,j,jb,div,tmp_res,tmp_1,tmp_2;
-    int  mythread,num_up,num_down,all_up,all_down;
+    long unsigned int i,ib,jb;
+    int num_up,num_down,all_up,all_down;
     long int **comb;
-    long unsigned int *jbthread;
-    int iSpnup, iMinup,iAllup;
+    int iMinup,iAllup;
 
     comb = li_2d_allocate(X->Def.Nsite+1,X->Def.Nsite+1);
     // this part can not be parallelized
     jb     = 0;
-    iSpnup = 0;
     iMinup = 0;
     iAllup = X->Def.Ne;
     if(X->Def.Ne > X->Def.Nsite){
         iMinup = X->Def.Ne-X->Def.Nsite;
         iAllup = X->Def.Nsite;
     }
+    GetHalfBitSiteCounts(X, &all_up, &all_down);
     for(ib=0;ib<X->Check.sdim;ib++){
         list_jb[ib] = jb;
         i           = ib*ihfbit;
-        num_up      = 0;
-        for(j=0;j<=N2-2;j+=2){
-            div     = i & X->Def.Tpow[j];
-            div     = div/X->Def.Tpow[j];
-            num_up += div;
-        }
-        num_down=0;
-        for(j=1;j<=N2-1;j+=2){
-            div       = i & X->Def.Tpow[j];
-            div       = div/X->Def.Tpow[j];
-            num_down += div;
-        }
-        tmp_res  = X->Def.Nsite%2; // even Ns-> 0, odd Ns -> 1
-        all_up   = (X->Def.Nsite+tmp_res)/2;
-        all_down = (X->Def.Nsite-tmp_res)/2;
-            
-        for(iSpnup=iMinup; iSpnup<= iAllup; iSpnup++){
-            tmp_1 = Binomial(all_up, iSpnup-num_up,comb,all_up);
-            tmp_2 = Binomial(all_down, X->Def.Ne-iSpnup-num_down,comb,all_down);
-            jb   += tmp_1*tmp_2;
-        }
+
+        CountHalfBitSpinOccupations(X, N2, i, &num_up, &num_down);
+        jb += ComputeHubbardNConservedContribution(X, num_up, num_down, comb, all_up, all_down, iMinup, iAllup);
     }
     free_li_2d_allocate(comb);
 }
 
 void calculate_jb_HubbardNCoserved_Hacker(struct BindStruct *X,long unsigned int *list_jb, long unsigned int ihfbit, unsigned int N2){
     long unsigned int sdim_div,sdim_rest,ib_start,ib_end;
-    long unsigned int i,ib,j,jb,div,tmp_res,tmp_1,tmp_2;
+    long unsigned int i,ib,j,jb;
     int  mythread,num_up,num_down,all_up,all_down;
     long int **comb2;
     long unsigned int *jbthread;
-    int iSpnup, iMinup,iAllup;
+    int iMinup,iAllup;
 
     iMinup = 0;
     iAllup = X->Def.Ne;
@@ -2104,14 +2182,14 @@ void calculate_jb_HubbardNCoserved_Hacker(struct BindStruct *X,long unsigned int
         iMinup = X->Def.Ne-X->Def.Nsite;
         iAllup = X->Def.Nsite;
     }
+    GetHalfBitSiteCounts(X, &all_up, &all_down);
     jbthread = lui_1d_allocate(nthreads);
     #pragma omp parallel default(none) \
-    shared(X,iMinup,iAllup,list_jb,ihfbit,N2,nthreads,jbthread) \
-    private(ib,i,j,num_up,num_down,div,tmp_res,tmp_1,tmp_2,iSpnup,jb,all_up,all_down,comb2, \
+    shared(X,iMinup,iAllup,all_up,all_down,list_jb,ihfbit,N2,nthreads,jbthread) \
+    private(ib,i,j,num_up,num_down,jb,comb2, \
     mythread,sdim_rest,sdim_div,ib_start,ib_end)
     {
         jb = 0;
-        iSpnup=0;
     #ifdef _OPENMP
         mythread = omp_get_thread_num();
     #else
@@ -2131,27 +2209,9 @@ void calculate_jb_HubbardNCoserved_Hacker(struct BindStruct *X,long unsigned int
         for(ib=ib_start;ib<ib_end;ib++){
             list_jb[ib] = jb;
             i       = ib*ihfbit;
-            num_up  = 0;
-            for(j=0;j<=N2-2;j+=2){
-                div     = i & X->Def.Tpow[j];
-                div     = div/X->Def.Tpow[j];
-                num_up += div;
-            }
-            num_down=0;
-            for(j=1;j<=N2-1;j+=2){
-                div=i & X->Def.Tpow[j];
-                div=div/X->Def.Tpow[j];
-                num_down+=div;
-            }
-            tmp_res  = X->Def.Nsite%2; // even Ns-> 0, odd Ns -> 1
-            all_up   = (X->Def.Nsite+tmp_res)/2;
-            all_down = (X->Def.Nsite-tmp_res)/2;
-            
-            for(iSpnup=iMinup; iSpnup<= iAllup; iSpnup++){
-                tmp_1 = Binomial(all_up, iSpnup-num_up,comb2,all_up);
-                tmp_2 = Binomial(all_down, X->Def.Ne-iSpnup-num_down,comb2,all_down);
-                jb   += tmp_1*tmp_2;
-            }
+
+            CountHalfBitSpinOccupations(X, N2, i, &num_up, &num_down);
+            jb += ComputeHubbardNConservedContribution(X, num_up, num_down, comb2, all_up, all_down, iMinup, iAllup);
         }
         free_li_2d_allocate(comb2);
         if(mythread != nthreads-1) jbthread[mythread+1] = jb;
@@ -2170,43 +2230,52 @@ void calculate_jb_HubbardNCoserved_Hacker(struct BindStruct *X,long unsigned int
     free_lui_1d_allocate(jbthread);
 }
 
+static int CountTJHalfBitOccupations(const struct BindStruct *X,
+                                     const unsigned int N2,
+                                     const long unsigned int state,
+                                     int *num_up,
+                                     int *num_down) {
+    long unsigned int j;
+    long unsigned int div_up;
+    long unsigned int div_down;
+    int check_doublon = 0;
+
+    *num_up = 0;
+    *num_down = 0;
+    for (j = 0; j < (N2 / 2); j++) {
+        div_up = state & X->Def.Tpow[2 * j];
+        div_up = div_up / X->Def.Tpow[2 * j];
+        div_down = state & X->Def.Tpow[2 * j + 1];
+        div_down = div_down / X->Def.Tpow[2 * j + 1];
+        check_doublon = div_up * div_down;
+        if (check_doublon == 1) {
+            break;
+        }
+        *num_up += (int)div_up;
+        *num_down += (int)div_down;
+    }
+    return check_doublon;
+}
+
 void calculate_jb_tJ(struct BindStruct *X,long unsigned int *list_jb, long unsigned int ihfbit, unsigned int N2){
     /*[s] this part can not be parallelized*/
-    long unsigned int jb = 0,div_up,div_down,i,j,tmp_1,tmp_2;
+    long unsigned int jb = 0, i, tmp_1, tmp_2;
     long int **comb;
-    int num_up,num_down,check_doublon;
-    int tmp_res,all_up,all_down;
+    int num_up, num_down, check_doublon;
+    int all_up, all_down;
     comb          = li_2d_allocate(X->Def.Nsite+1,X->Def.Nsite+1);
 
     for(long unsigned ib=0;ib<X->Check.sdim;ib++){ // sdim = 2^(N/2)
         list_jb[ib]   = jb;
         i             = ib*ihfbit;
-        check_doublon = 0;
-        //[s] counting # of up and down electrons
-        num_up   = 0;
-        num_down = 0;
-        for(j=0;j<(N2/2);j++){ 
-            div_up         = i & X->Def.Tpow[2*j];// even -> up spin
-            div_up         = div_up/X->Def.Tpow[2*j];
-            div_down       = i & X->Def.Tpow[2*j+1];//odd -> down spin
-            div_down       = div_down/X->Def.Tpow[2*j+1];
-            check_doublon  = div_up*div_down;
-            if (check_doublon==1){
-                break;
-            }
-            num_up        += div_up;
-            num_down      += div_down;
-        }
-        //[e] counting # of up and down electrons
+        check_doublon = CountTJHalfBitOccupations(X, N2, i, &num_up, &num_down);
           
         /* eg of even sites: 4site-> |DU|DU || |DU|DU|*/
         /* eg of odd  sites: 3site-> |DU|D  ||  |U|DU|*/
         /* all_up   -> # of up   sites in the lower half of bits*/
         /* all_down -> # of down sites in the lower half of bits*/
         if (check_doublon==0){
-            tmp_res  = X->Def.Nsite%2; // even Ns-> 0, odd Ns -> 1
-            all_up   = (X->Def.Nsite+tmp_res)/2;
-            all_down = (X->Def.Nsite-tmp_res)/2;
+            GetHalfBitSiteCounts(X, &all_up, &all_down);
             tmp_1    = Binomial(all_up,X->Def.Nup-num_up,comb,all_up);
             tmp_2    = Binomial(all_down-(X->Def.Nup-num_up),X->Def.Ndown-num_down,comb,all_down);/* tJ all_down-(X->Def.Nup-num_up)*/
             jb       += tmp_1*tmp_2;
@@ -2219,10 +2288,10 @@ void calculate_jb_tJ(struct BindStruct *X,long unsigned int *list_jb, long unsig
 
 void calculate_jb_tJNConserved(struct BindStruct *X,long unsigned int *list_jb, long unsigned int ihfbit, unsigned int N2){
     /*[s] this part can not be parallelized*/
-    long unsigned int jb = 0,div_up,div_down,i,j,tmp_1,tmp_2;
+    long unsigned int jb = 0, i, tmp_1, tmp_2;
     long int **comb;
-    int num_up,num_down,check_doublon;
-    int tmp_res,all_up,all_down;
+    int num_up, num_down, check_doublon;
+    int all_up, all_down;
     int iSpnup, iMinup,iAllup;
 
     comb          = li_2d_allocate(X->Def.Nsite+1,X->Def.Nsite+1);
@@ -2236,32 +2305,14 @@ void calculate_jb_tJNConserved(struct BindStruct *X,long unsigned int *list_jb, 
     for(long unsigned ib=0;ib<X->Check.sdim;ib++){ // sdim = 2^(N/2)
         list_jb[ib]   = jb;
         i             = ib*ihfbit;
-        check_doublon = 0;
-        //[s] counting # of up and down electrons
-        num_up        = 0;
-        num_down      = 0;
-        for(j=0;j<(N2/2);j++){ 
-            div_up         = i & X->Def.Tpow[2*j];// even -> up spin
-            div_up         = div_up/X->Def.Tpow[2*j];
-            div_down       = i & X->Def.Tpow[2*j+1];//odd -> down spin
-            div_down       = div_down/X->Def.Tpow[2*j+1];
-            check_doublon  = div_up*div_down;
-            if (check_doublon==1){
-                break;
-            }
-            num_up        += div_up;
-            num_down      += div_down;
-        }
-        //[e] counting # of up and down electrons
+        check_doublon = CountTJHalfBitOccupations(X, N2, i, &num_up, &num_down);
           
         /* eg of even sites: 4site-> |DU|DU || |DU|DU|*/
         /* eg of odd  sites: 3site-> |DU|D  ||  |U|DU|*/
         /* all_up   -> # of up   sites in the lower half of bits*/
         /* all_down -> # of down sites in the lower half of bits*/
         if (check_doublon==0){
-            tmp_res  = X->Def.Nsite%2; // even Ns-> 0, odd Ns -> 1
-            all_up   = (X->Def.Nsite+tmp_res)/2;
-            all_down = (X->Def.Nsite-tmp_res)/2;
+            GetHalfBitSiteCounts(X, &all_up, &all_down);
 
             for(iSpnup=iMinup; iSpnup<= iAllup; iSpnup++){
                 tmp_1    = Binomial(all_up,iSpnup-num_up,comb,all_up);
@@ -2276,43 +2327,27 @@ void calculate_jb_tJNConserved(struct BindStruct *X,long unsigned int *list_jb, 
 
 void calculate_jb_tJGC(struct BindStruct *X,long unsigned int *list_jb, long unsigned int ihfbit, unsigned int N2){
     /*[s] this part can not be parallelized*/
-    long unsigned int jb = 0,div_up,div_down,i,j,tmp_1,tmp_2;
+    long unsigned int jb = 0, i, tmp_1, tmp_2;
     long int **comb;
-    int num_up,num_down,check_doublon;
-    int tmp_res,all_up,all_down;
-    int iSpnup,iSpndown,iMinup,iAllup;
+    int num_up, num_down, check_doublon;
+    int all_up, all_down;
+    int iSpnup,iSpndown;
 
     comb          = li_2d_allocate(X->Def.Nsite+1,X->Def.Nsite+1);
 
     for(long unsigned ib=0;ib<X->Check.sdim;ib++){ // sdim = 2^(N/2)
         list_jb[ib]   = jb;
         i             = ib*ihfbit;
-        check_doublon = 0;
-        //[s] counting # of up and down electrons
-        num_up   = 0;
-        num_down = 0;
-        for(j=0;j<(N2/2);j++){ 
-            div_up         = i & X->Def.Tpow[2*j];// even -> up spin
-            div_up         = div_up/X->Def.Tpow[2*j];
-            div_down       = i & X->Def.Tpow[2*j+1];//odd -> down spin
-            div_down       = div_down/X->Def.Tpow[2*j+1];
-            check_doublon  = div_up*div_down;
-            if (check_doublon==1){
-                break;
-            }
-            num_up        += div_up;
-            num_down      += div_down;
-        }
-        //[e] counting # of up and down electrons
+        check_doublon = CountTJHalfBitOccupations(X, N2, i, &num_up, &num_down);
+        (void)num_up;
+        (void)num_down;
           
         /* eg of even sites: 4site-> |DU|DU || |DU|DU|*/
         /* eg of odd  sites: 3site-> |DU|D  ||  |U|DU|*/
         /* all_up   -> # of up   sites in the lower half of bits*/
         /* all_down -> # of down sites in the lower half of bits*/
         if (check_doublon==0){
-            tmp_res  = X->Def.Nsite%2; // even Ns-> 0, odd Ns -> 1
-            all_up   = (X->Def.Nsite+tmp_res)/2;
-            all_down = (X->Def.Nsite-tmp_res)/2;
+            GetHalfBitSiteCounts(X, &all_up, &all_down);
             for(iSpnup=0; iSpnup<= all_up; iSpnup++){
                 tmp_1   = Binomial(all_up,iSpnup,comb,all_up);
                 for(iSpndown=0; iSpndown<= all_down; iSpndown++){
@@ -2325,4 +2360,3 @@ void calculate_jb_tJGC(struct BindStruct *X,long unsigned int *list_jb, long uns
     free_li_2d_allocate(comb);
     /*[e] this part can not be parallelized*/
 }
-

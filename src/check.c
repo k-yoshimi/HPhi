@@ -155,9 +155,9 @@ int check(struct BindStruct *X){
 
   case tJGC:
     comb_sum=0;
-    for(i=0; i<= X->Def.Ne; i++){
+    for(i=0; i<= Ns; i++){
       comb_up   = Binomial(Ns, i, comb, Ns);
-      for(j=0; j<= X->Def.Ne; j++){
+      for(j=0; j<= Ns-i; j++){
         comb_down = Binomial(Ns-i, j, comb, Ns);
         comb_sum += comb_up*comb_down;
       }

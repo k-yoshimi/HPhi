@@ -6,8 +6,71 @@ on:
   schedule:
     - cron: '0 0 1,15 * *' # JST 9:00 on 1st and 15th every month
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  ctest:
+  ctest_unit:
+    if: ${{ github.event_name != 'schedule' }}
+    runs-on: ubuntu-24.04
+
+    env:
+      MPIRUN: "mpiexec --oversubscribe -np 1"
+      OMP_NUM_THREADS: 1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bootstrap and build
+        uses: ./.github/actions/bootstrap-build
+        with:
+          build-dir: ${{ runner.workspace }}/build
+          source-dir: ${{ github.workspace }}
+
+      - name: ctest unit
+        working-directory: ${{runner.workspace}}/build
+        shell: bash
+        run: ctest -V -L unit
+
+  ctest_smoke:
+    if: ${{ github.event_name != 'schedule' }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            mpisize: 1
+            ompsize: 1
+          - os: ubuntu-24.04
+            mpisize: 1
+            ompsize: 3
+          - os: macos-latest
+            mpisize: 1
+            ompsize: 1
+      fail-fast: false
+
+    env:
+      MPIRUN: "mpiexec --oversubscribe -np ${{ matrix.mpisize }}"
+      OMP_NUM_THREADS: ${{ matrix.ompsize }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bootstrap and build
+        uses: ./.github/actions/bootstrap-build
+        with:
+          build-dir: ${{ runner.workspace }}/build
+          source-dir: ${{ github.workspace }}
+
+      - name: ctest smoke
+        working-directory: ${{runner.workspace}}/build
+        shell: bash
+        run: ctest -V -L smoke
+
+  ctest_full_schedule:
+    if: ${{ github.event_name == 'schedule' }}
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -31,56 +94,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: apt
-        if: ${{ runner.os == 'Linux' }}
-        run: |
-          sudo apt update
-          sudo apt install libblas-dev liblapack-dev openmpi-bin libopenmpi-dev libscalapack-openmpi-dev
-
-      - name: brew
-        if: ${{ runner.os == 'macOS' }}
-        run: |
-          brew install openmpi scalapack
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: bootstrap and build
+        uses: ./.github/actions/bootstrap-build
         with:
-          python-version: "3.11"
+          build-dir: ${{ runner.workspace }}/build
+          source-dir: ${{ github.workspace }}
 
-      - name: pip
-        run: |
-          python3 -m pip install numpy
-
-      - name: make workspace
-        run: cmake -E make_directory ${{runner.workspace}}/build
-
-      - name: cmake
-        working-directory: ${{runner.workspace}}/build
-        shell: bash
-        run: |
-          if [ ${{ runner.os }} = "macOS" ] ; then
-            export FC=gfortran-15
-          fi
-          cmake -DCMAKE_VERBOSE_MAKEFILE=ON $GITHUB_WORKSPACE
-
-      - name: build
-        working-directory: ${{runner.workspace}}/build
-        shell: bash
-        run: cmake --build ./ -j4
-
-      - name: ctest
+      - name: ctest full (schedule, mpisize=1)
         if: ${{ matrix.mpisize == 1 }}
         working-directory: ${{runner.workspace}}/build
         shell: bash
         run: ctest -V
 
-      - name: ctest
+      - name: ctest full-partition spinone (schedule, mpisize=3/9)
         if: ${{ matrix.mpisize == 3 || matrix.mpisize == 9 }}
         working-directory: ${{runner.workspace}}/build
         shell: bash
         run: ctest -V -R spinone
 
-      - name: ctest
+      - name: ctest full-partition non-spinone (schedule, mpisize=4/16)
         if: ${{ matrix.mpisize == 4 || matrix.mpisize == 16 }}
         working-directory: ${{runner.workspace}}/build
         shell: bash

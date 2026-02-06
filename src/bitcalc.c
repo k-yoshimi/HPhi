@@ -16,6 +16,28 @@
 #include "bitcalc.h"
 #include "wrapperMPI.h"
 
+static int GetNsiteMultiplierByModel(const int iCalcModel, int *multiplier) {
+  switch (iCalcModel) {
+  case Hubbard:
+  case HubbardGC:
+  case HubbardNConserved:
+  case Kondo:
+  case KondoNConserved:
+  case KondoGC:
+  case tJ:
+  case tJNConserved:
+  case tJGC:
+    *multiplier = 2;
+    return 0;
+  case Spin:
+  case SpinGC:
+    *multiplier = 1;
+    return 0;
+  default:
+    return -1;
+  }
+}
+
 /**
  * @file   bitcalc.c
  * @version 0.1, 0.2
@@ -83,28 +105,13 @@ int GetSplitBitByModel(
                        long unsigned int *ihfbit  //!<[out]
                        )
 {
-  int tmpNsite=Nsite;
-  switch(iCalcModel){    
-  case Hubbard:
-  case HubbardGC:
-  case HubbardNConserved:
-  case Kondo:
-  case KondoNConserved:
-  case KondoGC:
-  case tJ:
-  case tJNConserved:
-  case tJGC:
-    tmpNsite *= 2;
-    break;
-  case Spin:
-  case SpinGC:   
-    break;
-  default:
+  int multiplier = 1;
+  if (GetNsiteMultiplierByModel(iCalcModel, &multiplier) != 0) {
     fprintf(stderr, cErrNoModel, iCalcModel);
     return -1;
   }
 
-  if(GetSplitBit(tmpNsite, irght, ilft, ihfbit)!=0){
+  if(GetSplitBit(Nsite * multiplier, irght, ilft, ihfbit)!=0){
     return -1;
   }
   

@@ -271,3 +271,41 @@ add_test(
   NAME lobcg_spinone_chain_threebody
   COMMAND ${CMAKE_SOURCE_DIR}/test/lobcg_spinone_chain_threebody.sh ${CMAKE_SOURCE_DIR}
 )
+
+# Time-evolution restart-vector tests depend on the output of te_ac_hubbard_square.
+# Use ctest fixtures so parallel execution does not race on missing files.
+set_tests_properties(te_ac_hubbard_square PROPERTIES FIXTURES_SETUP te_ac_restart_vector)
+set_tests_properties(
+  te_dc_hubbard_square
+  te_pulse_hubbard_square
+  te_quench_hubbard_square
+  PROPERTIES FIXTURES_REQUIRED te_ac_restart_vector
+)
+
+# Labeling for test-selection workflows (e.g. ctest -L smoke).
+get_property(HPHI_ALL_TESTS DIRECTORY PROPERTY TESTS)
+if(HPHI_ALL_TESTS)
+  set_property(TEST ${HPHI_ALL_TESTS} APPEND PROPERTY LABELS "e2e;mpi")
+endif()
+
+set(HPHI_SMOKE_TESTS
+  lanczos_hubbard_square
+  lobcg_hubbard_square
+  fulldiag_hubbard_chain
+  spectrum_hubbard_square
+  te_ac_hubbard_square
+  tpq_spin_kagome
+)
+set_property(TEST ${HPHI_SMOKE_TESTS} APPEND PROPERTY LABELS "smoke")
+
+set(HPHI_SLOW_TESTS
+  tpq_spin_kagome_randomsphere
+  ctpq_spin_kagome
+  ctpq_spin_kagome_randomsphere
+  read_ctpq_spin_chain
+  lobcg_spinone_chain_threebody
+)
+set_property(TEST ${HPHI_SLOW_TESTS} APPEND PROPERTY LABELS "slow")
+
+# Unit tests are managed in a dedicated subdirectory.
+add_subdirectory(unit)
