@@ -3,7 +3,8 @@ set -eu
 
 WORKDIR="unit_te_interall_diagonal_characterization_work"
 HPHI_BIN="../../../src/HPhi"
-TE_TOOL="../../../../test/testTECalc.py"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+TE_TOOL="${SCRIPT_DIR}/../testTECalc.py"
 FLCT_FILE="output/Flct.dat"
 
 rm -rf "${WORKDIR}"
