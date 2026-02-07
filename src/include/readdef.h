@@ -102,6 +102,11 @@ int CheckInterAllHermite_simple
                 const int iCalcModel
         );
 
+typedef enum {
+  INTERALL_SPLIT_MODEL_FILTERED = 0,
+  INTERALL_SPLIT_SIMPLE = 1
+} InterAllSplitMode;
+
 
 /*
 int GetDiagonalInterAll
@@ -123,24 +128,9 @@ int GetDiagonalInterAll
                                 int *SpinChemi,
                                 double *ParaChemi,
                                 unsigned int *NChemi,
-                                const int iCalcModel
+                                const int iCalcModel,
+                                const InterAllSplitMode split_mode
                 );
-
-int GetDiagonalInterAll_simple
-        (
-                int **InterAll,
-                complex double *ParaInterAll,
-                const int NInterAll,
-                int **InterAllDiagonal,
-                double *ParaInterAllDiagonal,
-                int **InterAllOffDiagonal,
-                complex double *ParaInterAllOffDiagonal,
-                int *Chemi,
-                int *SpinChemi,
-                double *ParaChemi,
-                unsigned int *NChemi,
-                const int iCalcModel
-        );
 
 int ArrangeInterAllOffDiagonal
 (

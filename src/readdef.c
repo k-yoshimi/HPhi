@@ -1583,9 +1583,13 @@ int GetDiagonalInterAll
                 int *SpinChemi,
                 double *ParaChemi,
                 unsigned int *NChemi,
-                const int iCalcModel
+                const int iCalcModel,
+                const InterAllSplitMode split_mode
         )
 {
+  const int apply_model_filter =
+          (split_mode == INTERALL_SPLIT_SIMPLE) ? FALSE : TRUE;
+
   return SplitDiagonalAndOffDiagonalInterAll(
           InterAll,
           ParaInterAll,
@@ -1599,39 +1603,7 @@ int GetDiagonalInterAll
           ParaChemi,
           NChemi,
           iCalcModel,
-          TRUE);
-}
-
-int GetDiagonalInterAll_simple
-        (
-                int **InterAll,
-                complex double *ParaInterAll,
-                const int NInterAll,
-                int **InterAllDiagonal,
-                double *ParaInterAllDiagonal,
-                int **InterAllOffDiagonal,
-                complex double *ParaInterAllOffDiagonal,
-                int *Chemi,
-                int *SpinChemi,
-                double *ParaChemi,
-                unsigned int *NChemi,
-                const int iCalcModel
-        )
-{
-    return SplitDiagonalAndOffDiagonalInterAll(
-            InterAll,
-            ParaInterAll,
-            NInterAll,
-            InterAllDiagonal,
-            ParaInterAllDiagonal,
-            InterAllOffDiagonal,
-            ParaInterAllOffDiagonal,
-            Chemi,
-            SpinChemi,
-            ParaChemi,
-            NChemi,
-            iCalcModel,
-            FALSE);
+          apply_model_filter);
 }
 
 int ArrangeInterAllOffDiagonal

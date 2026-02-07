@@ -467,12 +467,13 @@ static int ParseIdxInterAllDef(FILE *fp, const char *defname, struct DefineList 
   X->NInterAll_Diagonal = icnt_diagonal;
   X->NInterAll_OffDiagonal = X->NInterAll - X->NInterAll_Diagonal;
 
-  if (GetDiagonalInterAll_simple(
+  if (GetDiagonalInterAll(
           X->InterAll, X->ParaInterAll, X->NInterAll,
           X->InterAll_Diagonal, X->ParaInterAll_Diagonal,
           X->InterAll_OffDiagonal, X->ParaInterAll_OffDiagonal,
           X->EDChemi, X->EDSpinChemi, X->EDParaChemi, &X->EDNChemi,
-          X->iCalcModel) != 0) {
+          X->iCalcModel,
+          INTERALL_SPLIT_SIMPLE) != 0) {
     return -1;
   }
 
@@ -769,11 +770,12 @@ static int ParseIdxTETwoBodyDef(FILE *fp, const char *defname, struct DefineList
     X->NTEInterAllDiagonal[idx] = icnt_diagonal;
     X->NTEInterAllOffDiagonal[idx] = icnt_interall - icnt_diagonal;
 
-    if (GetDiagonalInterAll_simple(
+    if (GetDiagonalInterAll(
             X->TEInterAll[idx], X->ParaTEInterAll[idx], X->NTEInterAll[idx],
             X->TEInterAllDiagonal[idx], X->ParaTEInterAllDiagonal[idx],
             X->TEInterAllOffDiagonal[idx], X->ParaTEInterAllOffDiagonal[idx],
-            X->TEChemi[idx], X->SpinTEChemi[idx], X->ParaTEChemi[idx], &X->NTEChemi[idx], X->iCalcModel) != 0) {
+            X->TEChemi[idx], X->SpinTEChemi[idx], X->ParaTEChemi[idx], &X->NTEChemi[idx], X->iCalcModel,
+            INTERALL_SPLIT_SIMPLE) != 0) {
       return -1;
     }
 
