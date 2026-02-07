@@ -74,7 +74,7 @@ jobs:
           ctest --output-on-failure -L smoke --parallel 1
 
   ctest_full_schedule:
-    if: ${{ github.event_name == 'schedule' }}
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'push' && contains(join(github.event.commits.*.message, ' '), '[full-ci]')) }}
     runs-on: ${{ matrix.os }}
 
     strategy:
