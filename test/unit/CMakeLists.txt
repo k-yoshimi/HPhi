@@ -12,6 +12,10 @@ add_executable(
 )
 target_include_directories(unit_bitcalc PRIVATE ${PROJECT_SOURCE_DIR}/src/include)
 target_compile_definitions(unit_bitcalc PRIVATE DSFMT_MEXP=19937)
+find_library(MATH_LIBRARY m)
+if(MATH_LIBRARY)
+  target_link_libraries(unit_bitcalc PRIVATE ${MATH_LIBRARY})
+endif()
 
 add_test(
   NAME unit_bitcalc
