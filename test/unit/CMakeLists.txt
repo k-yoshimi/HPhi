@@ -61,6 +61,12 @@ add_test(
 set_tests_properties(unit_readdef_missing_ncond_error PROPERTIES LABELS "unit")
 
 add_test(
+  NAME unit_readdef_interall_equivalence
+  COMMAND sh ${CMAKE_SOURCE_DIR}/test/unit/readdef_interall_equivalence.sh
+)
+set_tests_properties(unit_readdef_interall_equivalence PROPERTIES LABELS "unit")
+
+add_test(
   NAME unit_sz_characterization
   COMMAND sh ${CMAKE_SOURCE_DIR}/test/unit/sz_characterization.sh
 )
@@ -89,6 +95,12 @@ add_test(
   COMMAND sh ${CMAKE_SOURCE_DIR}/test/unit/sz_spin_calchs_zero.sh
 )
 set_tests_properties(unit_sz_spin_calchs_zero PROPERTIES LABELS "unit")
+
+add_test(
+  NAME unit_sz_hubbard_calchs_equivalence
+  COMMAND sh ${CMAKE_SOURCE_DIR}/test/unit/sz_hubbard_calchs_equivalence.sh
+)
+set_tests_properties(unit_sz_hubbard_calchs_equivalence PROPERTIES LABELS "unit")
 
 add_test(
   NAME unit_sz_generalspin_characterization
